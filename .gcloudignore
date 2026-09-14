@@ -1,0 +1,9 @@
+# Explicitly configure gcloud upload to include build artifacts (dist folder)
+.gcloudignore
+.git
+.gitignore
+node_modules/
+
+# Ensure the build output directory is NOT ignored and is uploaded
+!dist/
+!dist/**

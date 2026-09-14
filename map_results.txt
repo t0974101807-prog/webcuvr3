@@ -1,0 +1,220 @@
+src/components/AdminDashboard.tsx:      prefix = words.map(w => w[0].toUpperCase()).join('');
+src/components/AdminDashboard.tsx:                          {services.map((service) => (
+src/components/AdminDashboard.tsx:                            .map((service) => (
+src/components/AdminDashboard.tsx:                                      {editingNews?.category === 'Lĩnh vực hoạt động' && services.map(s => (
+src/components/AdminDashboard.tsx:                                      {editingNews?.category === 'Dịch vụ' && legalServices.map(l => (
+src/components/AdminDashboard.tsx:                                            {services.map(s => (
+src/components/AdminDashboard.tsx:                                            {legalServices.map(ls => (
+src/components/AdminDashboard.tsx:                                }).map((item) => (
+src/components/AdminDashboard.tsx:                                  {SYSTEM_TITLES.map((title, index) => (
+src/components/AdminDashboard.tsx:                          {recruitment.map((job) => (
+src/components/AdminDashboard.tsx:                          {team.map((member) => (
+src/components/AdminDashboard.tsx:                            {messages.map((thread: any) => (
+src/components/AdminDashboard.tsx:                               {visitorMessages.map((msg, i) => {
+src/components/AdminDashboard.tsx:                            {formMessages.map((msg: any) => (
+src/components/AdminDashboard.tsx:                                    const nextId = prev.id || (users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1);
+src/components/AdminDashboard.tsx:                                {SYSTEM_TITLES.map((title, index) => (
+src/components/AdminDashboard.tsx:                          {users.filter(u => u.role !== 'client').map((u) => (
+src/components/ClientManagement.tsx:        const unique = Array.from(new Map(data.map((item: any) => [item.id, item])).values());
+src/components/ClientManagement.tsx:    const merged = [...clients.map(c => ({
+src/components/ClientManagement.tsx:                  {processedClients.map((c) => (
+src/components/ClientPortal.tsx:            const deduplicated = Array.from(new Map(userCases.map(c => [c.systemId || c.id, c])).values());
+src/components/ClientPortal.tsx:                {cases.map((c, idx) => (
+src/components/ClientPortal.tsx:                                {clientFiles.map((att: any, attIdx: number) => (
+src/components/ClientPortal.tsx:              {messages.map((msg, idx) => {
+src/components/ContractsView.tsx:              {filteredContracts.map((contract, index) => (
+src/components/CustomCalendar.tsx:        events.map((e) =>
+src/components/CustomCalendar.tsx:          {months.map((month, idx) => {
+src/components/CustomCalendar.tsx:                  {Array.from({ length: emptyDays }).map((_, i) => (
+src/components/CustomCalendar.tsx:                  {days.map((day, dayIdx) => {
+src/components/CustomCalendar.tsx:          {["T2", "T3", "T4", "T5", "T6", "T7", "CN"].map((day) => (
+src/components/CustomCalendar.tsx:          {months.map((month, idx) => {
+src/components/CustomCalendar.tsx:                  {Array.from({ length: emptyDays }).map((_, i) => (
+src/components/CustomCalendar.tsx:                  {days.map((day, dayIdx) => {
+src/components/CustomCalendar.tsx:            {weekDays.map((day, idx) => {
+src/components/CustomCalendar.tsx:                .map((event, idx) => (
+src/components/CustomCalendar.tsx:          {hours.map((hour) => (
+src/components/CustomCalendar.tsx:                  .map((event, idx) => {
+src/components/CustomCalendar.tsx:                  {history.map((h, i) => (
+src/components/ERP.tsx:            filteredOptions.map((opt, idx) => (
+src/components/ERP.tsx:            new Map(data.map((item: any) => [item.id, item])).values(),
+src/components/ERP.tsx:    return users.map((u: any) => u.name || u.username);
+src/components/ERP.tsx:    return users.map((u: any) => `${u.name || u.username} (@${u.username})`);
+src/components/ERP.tsx:  const breakdownRows = taxBrackets.map((b) => {
+src/components/ERP.tsx:            {breakdownRows.map((tr, idx) => (
+src/components/ERP.tsx:          setPayrolls(data.map((d: any) => calculateFullPayroll(d)));
+src/components/ERP.tsx:    const data = payrolls.map((p) => {
+src/components/ERP.tsx:      ? Math.max(...payrolls.map((p) => Number(p.net) || 0))
+src/components/ERP.tsx:      ? Math.max(...evaluations.map((e) => Number(e.bonus_amount) || 0))
+src/components/ERP.tsx:              {payrolls.map((payroll: any) => (
+src/components/ERP.tsx:                evaluations.map((row, i) => (
+src/components/ERP.tsx:        events.map((e) =>
+src/components/ERP.tsx:  const weekDays = Array.from({ length: 7 }).map((_, i) => {
+src/components/ERP.tsx:        events.map((e) =>
+src/components/ERP.tsx:        setEvents(events.map(e => e.id === eventFormData.id ? updatedEventInfo : e));
+src/components/ERP.tsx:      const weekDateStrs = weekDays.map((d) => formatDateStr(d));
+src/components/ERP.tsx:                          {history.map((h, i) => (
+src/components/ERP.tsx:                    ].map((type) => (
+src/components/ERP.tsx:                {Array.from({ length: 12 }).map((_, i) => (
+src/components/ERP.tsx:                {Array.from({ length: 11 }).map((_, i) => {
+src/components/ERP.tsx:                      upcomingEvents.map((event) => (
+src/components/ERP.tsx:                    {chatMessages.map((msg) => (
+src/components/ERP.tsx:                {weekDays.map((date, i) => {
+src/components/ERP.tsx:                  {t.dayNames.map((day, i) => (
+src/components/ERP.tsx:                  {Array.from({ length: 35 }).map((_, i) => {
+src/components/ERP.tsx:                          {dayEvents.slice(0, 3).map((e, j) => (
+src/components/ERP.tsx:                    {Array.from({ length: 24 }).map((_, i) => (
+src/components/ERP.tsx:                      {Array.from({ length: 24 }).map((_, i) => (
+src/components/ERP.tsx:                    ).map((_, idx) => {
+src/components/ERP.tsx:                            .map((event) => {
+src/components/ERP.tsx:                                .map(Number);
+src/components/ERP.tsx:                                .map(Number);
+src/components/ERP.tsx:              {listEvents.map((event, idx) => {
+src/components/ERP.tsx:    return (users || []).map((u: any) => u.name || u.username);
+src/components/ERP.tsx:    return (users || []).map((u: any) => `${u.name || u.username} (@${u.username})`);
+src/components/ERP.tsx:    const list = records.map((r) => r.mainAssignee).filter(Boolean);
+src/components/ERP.tsx:          return text.split(/[ -]/).filter((word) => word.length > 0).map((word) => {
+src/components/ERP.tsx:        records.map((r) => (r.id === editingRecord.id ? updatedRecord : r)),
+src/components/ERP.tsx:            return text.split(/[ -]/).filter(word => word.length > 0).map(word => {
+src/components/ERP.tsx:        records.map((r) => (r.id === viewingRecord.id ? updatedRecord : r)),
+src/components/ERP.tsx:        records.map((r) => (r.id === viewingRecord.id ? updatedRecord : r)),
+src/components/ERP.tsx:      ...records.map((r) => [
+src/components/ERP.tsx:    const newAttachments = attachmentUploadFiles.map((file, idx) => {
+src/components/ERP.tsx:      records.map(r => r.id === viewingRecord.id ? updatedRecord : r), 
+src/components/ERP.tsx:                      {attachments.map((att: any, idx: number) => (
+src/components/ERP.tsx:                  {STATUS_OPTIONS.map((status) => (
+src/components/ERP.tsx:                  {PRIORITY_OPTIONS.map((p) => (
+src/components/ERP.tsx:            ...(viewingRecord.reportHistory || []).map((r: any) => ({ ...r, _type: 'report', ms: parseDateString(r.timestamp) })),
+src/components/ERP.tsx:            ...(viewingRecord.auditLogs || []).map((l: any) => ({ ...l, _type: 'audit', ms: parseDateString(l.timestamp) }))
+src/components/ERP.tsx:                {groupedLogs.map((group, i: number) => {
+src/components/ERP.tsx:                              {report.files.map((f: any, fileIdx: number) => (
+src/components/ERP.tsx:              {attachmentUploadFiles.map((f, i) => (
+src/components/ERP.tsx:                ].map((tab) => (
+src/components/ERP.tsx:                  {uniqueAssignees.map((a) => (
+src/components/ERP.tsx:                  {STATUS_OPTIONS.map((opt) => (
+src/components/ERP.tsx:                  {["Bình thường", "Gấp", "Rất gấp"].map((opt) => (
+src/components/ERP.tsx:                    globalRecordTypes.map((rt: any, idx) => (
+src/components/ERP.tsx:              {paginatedRecords.map((record) => (
+src/components/ERP.tsx:                    {paginatedRecords.map((record) => (
+src/components/ERP.tsx:                      {Array.from({ length: totalPages }).map((_, i) => (
+src/components/ERP.tsx:                      {uniqueAssignees.map((assignee) => {
+src/components/ERP.tsx:                    columns = STATUS_OPTIONS.map((status) => ({
+src/components/ERP.tsx:                        filteredRecords.map(
+src/components/ERP.tsx:                    columns = assignees.map((assignee) => ({
+src/components/ERP.tsx:                      new Set(filteredRecords.map((r) => r.category || "Khác")),
+src/components/ERP.tsx:                    columns = categories.map((category) => ({
+src/components/ERP.tsx:                  return columns.map((col) => {
+src/components/ERP.tsx:                          {statusRecords.map((record) => (
+src/components/ERP.tsx:                  {Array.from({ length: totalPages }).map((_, i) => (
+src/components/ERP.tsx:                          ? globalRecordTypes.map((rt) => rt.type_name)
+src/components/ERP.tsx:                      {STEP_OPTIONS.map((opt) => (
+src/components/ERP.tsx:                          const uploadedAttachments = files.map(file => ({
+src/components/ERP.tsx:                        {attachments.map((att: any, idx: number) => (
+src/components/ERP.tsx:                          title={formData.reportFiles?.map((f: any) => f.name).join(', ')}
+src/components/ERP.tsx:                        {formData.reportHistory.map((report: any) => (
+src/components/ERP.tsx:                                  {report.files.map((f: any, i: number) => (
+src/components/ERP.tsx:                          const uploadedAttachments = files.map((file: any) => ({
+src/components/ERP.tsx:                        {attachments.map((file: any, index: number) => (
+src/components/ERP.tsx:    return Array.from({ length: trendDays }).map((_, i) => {
+src/components/ERP.tsx:                  .map((record, idx) => (
+src/components/ERP.tsx:          .map((r) => ({
+src/components/ERP.tsx:                {revenueRecords.map((record, index) => (
+src/components/ERP.tsx:                {chartData.map((entry, index) => (
+src/components/ERP.tsx:                {users?.map((user, index) => (
+src/components/ERP.tsx:                {userFilteredRecords.map((record, index) => (
+src/components/ERP.tsx:                {events.map((event, index) => (
+src/components/ERP.tsx:        const uniqueClients = new Set(userFilteredRecords.map((r) => r.client))
+src/components/ERP.tsx:                {clientList.map((client, index) => (
+src/components/ERP.tsx:          new Set(overdueRecords.map((r) => r.mainAssignee || "Không có")),
+src/components/ERP.tsx:          .map((assignee) => ({
+src/components/ERP.tsx:                {overdueRecords.map((item, index) => (
+src/components/ERP.tsx:          ...userFilteredRecords.map((r) => ({
+src/components/ERP.tsx:          ...events.map((e) => ({
+src/components/ERP.tsx:                {allActivities.map((activity, index) => (
+src/components/ERP.tsx:                {chartData.map((entry, index) => (
+src/components/ERP.tsx:                {mockRewards.map((item, index) => (
+src/components/ERP.tsx:                {chartData.map((entry, index) => (
+src/components/ERP.tsx:          .map((r) => ({
+src/components/ERP.tsx:                {contractsList.map((contract, index) => (
+src/components/ERP.tsx:              ].map(role => (
+src/components/ERP.tsx:                    ].map((color, i) => (
+src/components/ERP.tsx:          {recordTypes.map((type) => {
+src/components/ERP.tsx:  const uniqueUsers = Array.from(new Set(records?.map((r) => r.mainAssignee).filter(Boolean)));
+src/components/ERP.tsx:        .map((r) => r.title)
+src/components/ERP.tsx:    setNotifications(notifications.map((n) => ({ ...n, read: true })));
+src/components/ERP.tsx:      notifications.map((n) => (n.id === id ? { ...n, read: true } : n)),
+src/components/ERP.tsx:                          records.map((r) => (
+src/components/ERP.tsx:                      ...ROLE_OPTIONS.map((role) => ({ label: role, value: role }))
+src/components/ERP.tsx:                      {uniqueUsers.map((user) => (
+src/components/ERP.tsx:            notifications.map((notification) => (
+src/components/ERP.tsx:              {nearingDeadlineRecords.slice(0, 5).map((record, idx) => (
+src/components/ERP.tsx:                .map(([category, count], idx) => {
+src/components/ERP.tsx:                .map((stat, idx) => {
+src/components/ERP.tsx:      Array.from(new Set(users.filter((u)=>u.role!=='client').map((u) => u.title || u.role).filter(Boolean))),
+src/components/ERP.tsx:    () => Array.from(new Set(users.filter((u)=>u.role!=='client').map((u) => u.branch).filter(Boolean))),
+src/components/ERP.tsx:    return filteredUsers.map((u) => {
+src/components/ERP.tsx:      .then((data: any[]) => setPayrolls(data.map((d: any) => calculateFullPayroll(d))))
+src/components/ERP.tsx:      prefix = words.map((w) => w[0].toUpperCase()).join("");
+src/components/ERP.tsx:              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+src/components/ERP.tsx:              ).map((y) => (
+src/components/ERP.tsx:                  {uniqueRoles.map((r) => (
+src/components/ERP.tsx:                  {uniqueBranches.map((b) => (
+src/components/ERP.tsx:                  {filteredUsers.map((u, i) => (
+src/components/ERP.tsx:                  {filteredUsers.map((u, i) => {
+src/components/ERP.tsx:                  {performanceData.map((u, i) => (
+src/components/ERP.tsx:                  {filteredUsers.map((u, i) => {
+src/components/ERP.tsx:                  {users.map((u) => (
+src/components/ERP.tsx:                  {users.map((u) => (
+src/components/ERP.tsx:            {clients.map((c) => (
+src/components/ERP.tsx:            {cases.map((c) => (
+src/components/ERP.tsx:            {cases.map((c) => (
+src/components/ERP.tsx:              files.map((f) => (
+src/components/ERP.tsx:       .then((data: any[]) => setPayrolls(data.map(d => calculateFullPayroll(d))))
+src/components/ERP.tsx:            {employees.map((e) => (
+src/components/ERP.tsx:            {payrolls.map((p, i) => (
+src/components/ERP.tsx:        files: uploadedFiles.map((f) => f.name),
+src/components/ERP.tsx:        promptText = `Context: User uploaded files: ${currentFiles.map((f) => f.name).join(", ")}. \nUser request: ${promptText}\nPlease read the attached files and provide a helpful, detailed, and completely accurate response based ONLY on their content. Answer in the same language as the user's request.`;
+src/components/ERP.tsx:                          children: compareResult.split("\n").map(
+src/components/ERP.tsx:              {messages.map((msg, idx) => (
+src/components/ERP.tsx:                        {msg.agents.map((agent) => (
+src/components/ERP.tsx:                          {msg.files.map((f) => (
+src/components/ERP.tsx:                        {processingSteps.map((step, idx) => (
+src/components/ERP.tsx:                    {uploadedFiles.map((file, idx) => (
+src/components/FloatingActions.tsx:                  {messages.map((msg, i) => {
+src/components/InternalChatModal.tsx:            messages.map((msg, idx) => {
+src/components/LegalDocumentsManager.tsx:  const categories = ['Tất cả', ...Array.from(new Set(documents.map(d => d.category).filter(Boolean)))];
+src/components/LegalDocumentsManager.tsx:  const signers = ['Tất cả', ...Array.from(new Set(documents.map(d => d.signer).filter(Boolean)))];
+src/components/LegalDocumentsManager.tsx:              ${filteredDocs.map((doc, index) => `
+src/components/LegalDocumentsManager.tsx:                {categories.map(c => <option key={c} value={c}>{c}</option>)}
+src/components/LegalDocumentsManager.tsx:                {statuses.map(s => <option key={s} value={s}>{s}</option>)}
+src/components/LegalDocumentsManager.tsx:                {types.map(t => <option key={t} value={t}>{t}</option>)}
+src/components/LegalDocumentsManager.tsx:                {signers.map(s => <option key={s} value={s}>{s}</option>)}
+src/components/LegalDocumentsManager.tsx:              {filteredDocs.map((doc, index) => (
+src/components/LegalDocumentsManager.tsx:                {['Hôn nhân gia đình', 'Dân sự', 'Hình sự', 'Đất đai', 'Lao động', 'Doanh nghiệp'].map((cat, i) => (
+src/components/LegalDocumentsManager.tsx:                {['Luật', 'Nghị định', 'Thông tư', 'Nghị quyết', 'Quyết định'].map((type, i) => (
+src/components/LegalDocumentsManager.tsx:                  {history.map((h, i) => (
+src/components/LegalServices.tsx:          {legalServices.map((service, index) => {
+src/components/LegalServices.tsx:                      {relatedNews.map((news) => (
+src/components/LiveChatModal.tsx:            messages.map((msg, idx) => {
+src/components/Navbar.tsx:            {navLinks.map((link) => (
+src/components/Navbar.tsx:              {navLinks.map((link) => (
+src/components/Network.tsx:      const map = L.map(mapContainerRef.current, {
+src/components/Network.tsx:            {branches.map((branch) => (
+src/components/News.tsx:                {tabs.map((tab) => (
+src/components/News.tsx:                listNews.map((item) => (
+src/components/QRProfileManager.tsx:    const updatedRecords = records.map(r => {
+src/components/QRProfileManager.tsx:            {records.length > 0 && records.map((p) => (
+src/components/Recruitment.tsx:          {positions.map((job, index) => (
+src/components/SecurityView.tsx:                 {systemStatus?.loginStats?.chartData?.map((val: number, i: number) => (
+src/components/SecurityView.tsx:                        .map((log: any, idx: number) => (
+src/components/SecurityView.tsx:                {['Tất cả', 'Đăng nhập', 'Tải tài liệu', 'Xóa hồ sơ', 'Thay đổi quyền'].map(f => (
+src/components/SecurityView.tsx:                  {systemStatus?.logs?.slice(0, 5).map((log: any, i: number) => {
+src/components/SecurityView.tsx:              {coreRules.map((rule, idx) => (
+src/components/SecurityView.tsx:              {methods.map((method, idx) => (
+src/components/SecurityView.tsx:                  {attacksList.map((attack, idx) => (
+src/components/SecurityView.tsx:                      {systemStatus?.auditLogs?.map((log: any, idx: number) => (
+src/components/SecurityView.tsx:                    {systemStatus?.logs?.map((log: any, idx: number) => (
+src/components/Services.tsx:          {services.map((service, index) => {
+src/components/Services.tsx:                      {relatedNews.map((news) => (
+src/components/Team.tsx:          {team.map((member, index) => (
+src/components/WhyChooseUs.tsx:          {reasons.map((reason, index) => {

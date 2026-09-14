@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#1e293b" />
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fef08a" />
+      <stop offset="50%" stop-color="#eab308" />
+      <stop offset="100%" stop-color="#a16207" />
+    </linearGradient>
+  </defs>
+  
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+  
+  <g transform="translate(106, 106) scale(1.17)">
+    <!-- Sun -->
+    <path d="M128 32 A 96 96 0 0 1 224 128 A 96 96 0 0 1 128 224 A 96 96 0 0 1 32 128 A 96 96 0 0 1 128 32 Z" fill="#eab308" opacity="0.15" />
+    <path d="M128 64 A 64 64 0 0 1 192 128 A 64 64 0 0 1 128 192 A 64 64 0 0 1 64 128 A 64 64 0 0 1 128 64 Z" fill="#eab308" opacity="0.3" />
+    
+    <!-- Balance Scale -->
+    <!-- Base -->
+    <path d="M88 224 L168 224 L168 240 L88 240 Z" fill="url(#goldGrad)" />
+    <path d="M104 208 L152 208 L168 224 L88 224 Z" fill="url(#goldGrad)" />
+    
+    <!-- Pillar -->
+    <path d="M120 72 L136 72 L136 208 L120 208 Z" fill="url(#goldGrad)" />
+    <!-- Top Cap -->
+    <path d="M112 56 L144 56 L144 72 L112 72 Z" fill="url(#goldGrad)" />
+    <path d="M128 24 L140 40 L116 40 Z" fill="url(#goldGrad)" />
+    
+    <!-- Crossbar -->
+    <path d="M48 88 Q128 64 208 88 L208 96 Q128 72 48 96 Z" fill="url(#goldGrad)" />
+    
+    <!-- Left Scale -->
+    <path d="M48 96 L24 160 L72 160 Z" fill="url(#goldGrad)" fill-opacity="0.2" stroke="url(#goldGrad)" stroke-width="2" />
+    <path d="M48 96 L24 160" stroke="url(#goldGrad)" stroke-width="2" />
+    <path d="M48 96 L72 160" stroke="url(#goldGrad)" stroke-width="2" />
+    <path d="M24 160 Q48 176 72 160 Z" fill="url(#goldGrad)" />
+    
+    <!-- Right Scale -->
+    <path d="M208 96 L184 160 L232 160 Z" fill="url(#goldGrad)" fill-opacity="0.2" stroke="url(#goldGrad)" stroke-width="2" />
+    <path d="M208 96 L184 160" stroke="url(#goldGrad)" stroke-width="2" />
+    <path d="M208 96 L232 160" stroke="url(#goldGrad)" stroke-width="2" />
+    <path d="M184 160 Q208 176 232 160 Z" fill="url(#goldGrad)" />
+  </g>
+</svg>

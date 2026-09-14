@@ -1,0 +1,78 @@
+122: import LiveChatModal from "./LiveChatModal";
+123: import InternalChatModal from "./InternalChatModal";
+519:   const [unreadInternalChats, setUnreadInternalChats] = useState<Record<string, number>>({});
+658:         .req("/api/unread-chats")
+669:              setUnreadInternalChats(data.unreadByRecord || {});
+1091:                 unreadInternalChats={unreadInternalChats}
+1183:                     ? `Bạn có ${unreadLiveMessages} tin nhắn Live Chat!`
+2543:   const [showChat, setShowChat] = useState(false);
+2544:   const [unreadChatCount, setUnreadChatCount] = useState(1);
+2545:   const [chatMessages, setChatMessages] = useState<
+2562:   const [chatInput, setChatInput] = useState("");
+2563:   const chatEndRef = useRef<HTMLDivElement>(null);
+2566:     if (showChat) {
+2567:       setUnreadChatCount(0);
+2568:       if (chatEndRef.current) {
+2569:         chatEndRef.current.scrollIntoView({ behavior: "smooth" });
+2572:   }, [showChat, chatMessages]);
+2575:     if (!chatInput.trim()) return;
+2576:     setChatMessages([
+2577:       ...chatMessages,
+2578:       { id: Date.now(), sender: "user", text: chatInput },
+2580:     setChatInput("");
+2590:       setChatMessages([
+2591:         ...chatMessages,
+3554:                 onClick={() => setShowChat(!showChat)}
+3558:                   {unreadChatCount > 0 && (
+3563:               {showChat && (
+3571:                       onClick={() => setShowChat(false)}
+3581:                     {chatMessages.map((msg) => (
+3622:                     <div ref={chatEndRef} />
+3658:                         value={chatInput}
+3659:                         onChange={(e) => setChatInput(e.target.value)}
+4246:   unreadInternalChats,
+4256:   unreadInternalChats?: Record<string, number>;
+4385:   const [showChatModal, setShowChatModal] = useState(false);
+4386:   const [showInternalChatModal, setShowInternalChatModal] = useState(false);
+4598:   const [chatMessages, setChatMessages] = useState<
+4628:       setChatMessages([
+4629:         ...chatMessages,
+4701:       chat: "Trao đổi",
+4751:       chat: "Chat",
+6190:                   setShowChatModal(true);
+6195:                 {language === "vi" ? "Khách hàng" : "Client Chat"}
+6200:                   setShowInternalChatModal(true);
+6206:                   {(unreadInternalChats || {})[viewingRecord?.id || viewingRecord?.systemId] > 0 && (
+6213:                 {language === "vi" ? "Nội bộ" : "Internal Chat"}
+9477:       {/* Chat Modal */}
+9478:       {showChatModal && (selectedRecord || viewingRecord) && (
+9479:         <LiveChatModal
+9482:           onClose={() => setShowChatModal(false)}
+9486:       {/* Internal Chat Modal */}
+9487:       {showInternalChatModal && (selectedRecord || viewingRecord) && (
+9488:         <InternalChatModal
+9491:           onClose={() => setShowInternalChatModal(false)}
+16786:         "Xin chào! Tôi là AI Orchestrator. Hãy đưa cho tôi yêu cầu hoặc tài liệu của bạn, tôi sẽ tự động điều phối các AI chuyên biệt (ChatGPT, Gemini, Claude, Document AI...) để xử lý tốt nhất.",
+16803:       chatGPTSynthesizing: "ChatGPT đang tổng hợp thông tin...",
+16814:       chatGPTReply:
+16815:         "ChatGPT đã tổng hợp các thông tin chính theo yêu cầu của bạn:\n\n- Điểm 1: Hồ sơ khách hàng Nguyễn Văn A đã đầy đủ giấy tờ tùy thân.\n- Điểm 2: Thiếu hợp đồng lao động bản gốc.\n- Điểm 3: Cần bổ sung giấy khám sức khỏe trước ngày 15/10.",
+16823:         "Hello! I am the AI Orchestrator. Give me your request or document, and I will automatically coordinate specialized AIs (ChatGPT, Gemini, Claude, Document AI...) to handle it best.",
+16840:       chatGPTSynthesizing: "ChatGPT is synthesizing information...",
+16851:       chatGPTReply:
+16852:         "ChatGPT has synthesized the main information as requested:\n\n- Point 1: Client Nguyen Van A's file has complete identification documents.\n- Point 2: Missing original labor contract.\n- Point 3: Need to supplement health certificate before Oct 15.",
+16860:   const [chatInput, setChatInput] = useState("");
+16948:     if (!chatInput.trim() && uploadedFiles.length === 0) return;
+16954:         content: chatInput,
+16959:     const currentInput = chatInput;
+16962:     setChatInput("");
+16999:           selectedAgents.push("Document AI", "ChatGPT");
+17028:         selectedAgents.push("ChatGPT");
+17040:         selectedAgents.push("ChatGPT");
+17041:         steps.push(t.chatGPTSynthesizing);
+17122:                 <span className="font-medium">ChatGPT</span>
+17164:       {/* Main Chat Area */}
+17401:             {/* Chat Messages */}
+17522:                       setChatInput(
+17581:                       value={chatInput}
+17582:                       onChange={(e) => setChatInput(e.target.value)}
+17597:                       (!chatInput.trim() && uploadedFiles.length === 0) ||

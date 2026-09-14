@@ -1,0 +1,144 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legal-os-api
+  namespace: legal-os-prod
+  labels:
+    app: legal-os
+    tier: api
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: legal-os
+      tier: api
+  template:
+    metadata:
+      labels:
+        app: legal-os
+        tier: api
+    spec:
+      serviceAccountName: legal-os-sa
+      terminationGracePeriodSeconds: 30
+      
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - legal-os
+                topologyKey: kubernetes.io/hostname
+                
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: legal-os-container
+          image: asia-southeast1-docker.pkg.dev/legal-os-prod/app/legal-os-api:v1.0.0
+          imagePullPolicy: IfNotPresent
+          
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+                
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+              
+          envFrom:
+            - configMapRef:
+                name: legal-os-config
+                
+          env:
+            # Downward API bindings for real-time memory monitor metadata mapping
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+                  
+            # V8 Garbage Collector Limit with safety margin (under 1Gi limit)
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=768"
+
+          # Startup probe to handle initial migrations or SQLite boots
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 10
+
+          # Readiness probe ensures traffic routing only to prepared replicas
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 3000
+            periodSeconds: 10
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 3
+
+          # Liveness probe monitors event-loop locks
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 3000
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # CPU and memory requests/limits according to our production spec
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"
+
+          # Read-only filesystems require temporary writable emptyDir for document worker jobs
+          volumeMounts:
+            - name: temp-storage
+              mountPath: /tmp
+            - name: log-storage
+              mountPath: /app/logs
+
+      volumes:
+        - name: temp-storage
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: log-storage
+          emptyDir:
+            sizeLimit: 500Mi

@@ -1,0 +1,13 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: legal-os-pdb
+  namespace: legal-os-prod
+  labels:
+    app: legal-os
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: legal-os
+      tier: api

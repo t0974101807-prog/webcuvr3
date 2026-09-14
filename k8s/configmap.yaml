@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: legal-os-config
+  namespace: legal-os-prod
+  labels:
+    app: legal-os
+    tier: api
+data:
+  # Memory Monitoring Core Engine Settings
+  MEMORY_MONITOR_ENABLED: "true"
+  MEMORY_MONITOR_INTERVAL_MS: "5000"
+  MEMORY_WARNING_PERCENT: "70"
+  MEMORY_CRITICAL_PERCENT: "85"
+  MEMORY_OOM_PERCENT: "95"
+  MEMORY_STATE_BUFFER_SIZE: "500"
+
+  # Heavy Workload Bounded Concurrency Limitations (Self-Protection)
+  PDF_MAX_CONCURRENCY: "2"
+  OCR_MAX_CONCURRENCY: "2"
+  AI_MAX_CONCURRENCY: "3"
+  EMBEDDING_MAX_CONCURRENCY: "3"
+  REPORT_MAX_CONCURRENCY: "2"
+
+  # Port Ingress Routing Mapping
+  PORT: "3000"

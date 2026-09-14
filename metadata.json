@@ -1,0 +1,11 @@
+{
+  "name": "LEGAL OS Enterprise",
+  "description": "Production-grade Legal Practice Management & Case Automation System with resilient multi-tier AI failover and Kubernetes infrastructure",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

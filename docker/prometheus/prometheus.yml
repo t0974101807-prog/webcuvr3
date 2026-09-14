@@ -1,0 +1,50 @@
+# ==============================================================================
+# LEGAL OS – PROMETHEUS SCRAPE CONFIGURATION
+# ==============================================================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files:
+  # - "alert.rules.yml"
+
+scrape_configs:
+  # 1. Legal OS Backend Application Metrics (Memory Monitor & API Latency)
+  - job_name: 'legal-os-backend'
+    metrics_path: '/api/system/metrics'
+    static_configs:
+      - targets: ['backend:3000']
+        labels:
+          app: 'legal-os'
+          service: 'backend'
+          environment: 'production'
+
+  # 2. Nginx Reverse Proxy Metrics
+  - job_name: 'legal-os-nginx'
+    static_configs:
+      - targets: ['nginx:80']
+        labels:
+          app: 'legal-os'
+          service: 'ingress'
+
+  # 3. PostgreSQL Database Exporter
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres:5432']
+        labels:
+          app: 'legal-os'
+          service: 'database'
+
+  # 4. Redis Cache / Queue Exporter
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+        labels:
+          app: 'legal-os'
+          service: 'cache-queue'

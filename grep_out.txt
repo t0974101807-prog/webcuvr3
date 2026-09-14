@@ -1,0 +1,19 @@
+135:function cn(...inputs: ClassValue[]) {
+424:export default function ERP({ onBack, user, onProfileClick }: ERPProps) {
+1252:function NavItem({
+1561:function PayrollView({
+2307:function CalendarView({ language }: { language: "vi" | "en" }) {
+2556:function EventsView({
+4236:function RecordsView({
+9558:function StatisticsView({
+10254:function ReportsView({
+12215:function PermissionsView({ language }: { language: "vi" | "en" }) {
+13048:function RecordTypesView({
+13425:function NotificationsView({
+13752:function Dashboard({
+14589:function Employees({
+16549:function Clients({ language = "vi" }: { language?: "vi" | "en" }) {
+16645:function Cases({ language = "vi" }: { language?: "vi" | "en" }) {
+16781:function Documents({ language = "vi" }: { language?: "vi" | "en" }) {
+16907:function Payroll({ language }: { language: "vi" | "en" }) {
+17037:function AIAssistant({ language }: { language: "vi" | "en" }) {

@@ -1,0 +1,242 @@
+{
+  "entities": {
+    "QrRecord": {
+      "title": "QR Record",
+      "description": "Public, non-PII record subset for QR code lookup",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "clientName": { "type": "string" },
+        "category": { "type": "string" },
+        "status": { "type": "string" },
+        "workStatus": { "type": "string" },
+        "assignee": { "type": "string" },
+        "courtRegion": { "type": "string" },
+        "lookupId": { "type": "string" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["title", "clientName", "category", "status", "workStatus", "assignee", "courtRegion", "lookupId", "updatedAt"]
+    },
+    "Appointment": {
+      "title": "Appointment",
+      "description": "Legal consultation appointment details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "clientName": { "type": "string" },
+        "phone": { "type": "string" },
+        "category": { "type": "string" },
+        "dateTime": { "type": "string" },
+        "assignedStaff": { "type": "string" },
+        "type": { "type": "string" },
+        "notes": { "type": "string" },
+        "status": { "type": "string" },
+        "dossierId": { "type": "string" }
+      },
+      "required": ["id", "clientName", "phone", "dateTime", "status"]
+    },
+    "CallLog": {
+      "title": "Call Log",
+      "description": "Yeastar legal consultation call log details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "type": { "type": "string" },
+        "duration": { "type": "number" },
+        "timestamp": { "type": "string" },
+        "hasRecording": { "type": "boolean" },
+        "recordingUrl": { "type": "string" },
+        "staffName": { "type": "string" },
+        "staffRole": { "type": "string" },
+        "branch": { "type": "string" },
+        "status": { "type": "string" },
+        "transcript": { "type": "string" },
+        "isViolated": { "type": "boolean" },
+        "dossierId": { "type": "string" },
+        "dossierTitle": { "type": "string" },
+        "category": { "type": "string" },
+        "consultationNote": { "type": "string" },
+        "qcRating": { "type": "string" },
+        "qcNotes": { "type": "string" },
+        "qcEvaluator": { "type": "string" }
+      },
+      "required": ["id", "name", "phone", "type", "timestamp"]
+    },
+    "SystemMetric": {
+      "title": "System Metric",
+      "description": "Background system performance and diagnostic metrics",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "metric_type": { "type": "string" },
+        "value": { "type": "number" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "metric_type", "value", "timestamp"]
+    },
+    "QaEvaluation": {
+      "title": "QA Evaluation",
+      "description": "Background quality assurance and VoIP compliance audits",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "call_id": { "type": "string" },
+        "staff_name": { "type": "string" },
+        "score": { "type": "string" },
+        "has_violation": { "type": "boolean" },
+        "violated_keywords": { "type": "string" },
+        "audited_at": { "type": "string" },
+        "details": { "type": "string" }
+      },
+      "required": ["id", "call_id", "staff_name", "score", "audited_at"]
+    },
+    "AuditLog": {
+      "title": "Audit Log",
+      "description": "System and user action audit logs for security tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "user": { "type": "string" },
+        "action": { "type": "string" },
+        "time": { "type": "string" }
+      },
+      "required": ["id", "user", "action", "time"]
+    },
+    "SignedDocument": {
+      "title": "Signed Document",
+      "description": "Bilingual digital legal agreement signed by client and saved as image in portal",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "clientId": { "type": "string" },
+        "clientName": { "type": "string" },
+        "templateId": { "type": "string" },
+        "documentTitle": { "type": "string" },
+        "documentCode": { "type": "string" },
+        "signedUrl": { "type": "string" },
+        "signedAt": { "type": "string" },
+        "inkColor": { "type": "string" },
+        "method": { "type": "string" }
+      },
+      "required": ["id", "clientId", "clientName", "templateId", "documentTitle", "documentCode", "signedUrl", "signedAt"]
+    },
+    "PortalActivity": {
+      "title": "Portal Activity",
+      "description": "Real-time statistics of client portal activity, including document access and message response times",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "clientId": { "type": "string" },
+        "clientName": { "type": "string" },
+        "documentTitle": { "type": "string" },
+        "responseTimeMinutes": { "type": "number" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "type", "clientName", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/qr_records/{recordId}": {
+      "schema": "QrRecord",
+      "description": "Stores latest status data for QR tracking"
+    },
+    "/appointments/{appointmentId}": {
+      "schema": "Appointment",
+      "description": "Stores customer booking and legal consultation appointments synced in real-time"
+    },
+    "/call_logs/{callLogId}": {
+      "schema": "CallLog",
+      "description": "Stores Yeastar call logs and notes synced in real-time"
+    },
+    "/system_metrics/{metricId}": {
+      "schema": "SystemMetric",
+      "description": "Stores system performance data offloaded automatically"
+    },
+    "/qa_evaluations/{evaluationId}": {
+      "schema": "QaEvaluation",
+      "description": "Stores quality assurance and VoIP audit logs offloaded automatically"
+    },
+    "/audit_logs/{auditLogId}": {
+      "schema": "AuditLog",
+      "description": "Stores security and activity audit logs synced in real-time"
+    },
+    "/signed_documents/{docId}": {
+      "schema": "SignedDocument",
+      "description": "Stores verified and timestamped customer-signed digital agreements"
+    },
+    "/land_documents/{docId}": {
+      "description": "Stores land pricing and classification documents uploaded by officials"
+    },
+    "/settings/{settingId}": {
+      "description": "Stores site preferences and system configurations"
+    },
+    "/ai_providers/{providerId}": {
+      "description": "Stores custom AI services and integration credentials"
+    },
+    "/ai_models/{modelId}": {
+      "description": "Stores configured AI engine types and token limits"
+    },
+    "/ai_logs/{logId}": {
+      "description": "Stores audit logs of all AI model invocations and performance metrics"
+    },
+    "/payments/{paymentId}": {
+      "description": "Stores system invoices, payment schedule headers, and totals"
+    },
+    "/payment_schedules/{scheduleId}": {
+      "description": "Stores split milestones for case fees and installments"
+    },
+    "/payment_transactions/{transactionId}": {
+      "description": "Stores actual transactions, bank receipt URLs, and verification state"
+    },
+    "/payment_events/{eventId}": {
+      "description": "Stores live status event changes for active collections"
+    },
+    "/receipts/{receiptId}": {
+      "description": "Stores legally binding electronic receipts generated for clients"
+    },
+    "/case_qr_tokens/{tokenId}": {
+      "description": "Stores secure validation tokens for dynamic QR invoice payments"
+    },
+    "/qc_rules/{ruleId}": {
+      "description": "Stores criteria for auto quality control auditing of customer calls"
+    },
+    "/qc_records/{recordId}": {
+      "description": "Stores auto quality control check metrics for legal calls"
+    },
+    "/finance_transactions/{txId}": {
+      "description": "Stores office and accounting ledger books entries"
+    },
+    "/company_assets/{assetId}": {
+      "description": "Stores physical and intellectual assets tracked in ERP"
+    },
+    "/company_debts/{debtId}": {
+      "description": "Stores loan records, interest accounts, and liabilities"
+    },
+    "/tax_reports/{reportId}": {
+      "description": "Stores calculated corporate VAT, income, and tax statements"
+    },
+    "/budget_plans/{planId}": {
+      "description": "Stores department budgets and custom expenditure ceilings"
+    },
+    "/salary_payment_orders/{orderId}": {
+      "description": "Stores bank salary transfer requests and release status"
+    },
+    "/voip_calls/{callId}": {
+      "description": "Stores raw virtual phone logs, recording paths, and lengths"
+    },
+    "/system_performance_metrics/{metricId}": {
+      "description": "Stores hardware resources, memory, and latency metrics"
+    },
+    "/quality_assurance_evaluations/{evaluationId}": {
+      "description": "Stores detailed manual agent call analysis and ratings"
+    },
+    "/portal_activities/{activityId}": {
+      "schema": "PortalActivity",
+      "description": "Stores real-time portal activity logs for admin dashboard statistics"
+    }
+  }
+}

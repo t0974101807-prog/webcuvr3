@@ -1,0 +1,196 @@
+version: '3.8'
+
+# ==============================================================================
+# LEGAL OS – DOCKER COMPOSE LOCAL & STAGING ORCHESTRATION
+# ==============================================================================
+
+networks:
+  legal_os_frontend:
+    driver: bridge
+  legal_os_backend:
+    driver: bridge
+  legal_os_database:
+    driver: bridge
+  legal_os_monitoring:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  uploads_data:
+    driver: local
+  sqlite_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Nginx Reverse Proxy / Load Balancer (Edge & TLS Termination)
+  # ----------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: legal-os-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - uploads_data:/app/uploads:ro
+    depends_on:
+      - backend
+    networks:
+      - legal_os_frontend
+      - legal_os_backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ----------------------------------------------------------------------------
+  # 2. Legal OS Core Backend & Web Application Server
+  # ----------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: legal-os-backend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://legal_user:legal_password@postgres:5432/legal_os_db
+      - REDIS_URL=redis://:redis_secure_pass@redis:6379/0
+      - SESSION_SECRET=c8f8b8392a104deeb5a7d65b0f5b9d3b
+      - JWT_SECRET=e7b419c8d35649a184a5cf2b0d39e248
+      - MEMORY_MONITOR_ENABLED=true
+      - MEMORY_WARNING_PERCENT=70
+      - MEMORY_CRITICAL_PERCENT=85
+      - MEMORY_OOM_PERCENT=95
+      - PDF_MAX_CONCURRENCY=2
+      - OCR_MAX_CONCURRENCY=2
+      - AI_MAX_CONCURRENCY=3
+    volumes:
+      - uploads_data:/app/uploads
+      - sqlite_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - legal_os_frontend
+      - legal_os_backend
+      - legal_os_database
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ----------------------------------------------------------------------------
+  # 3. Asynchronous Worker (Heavy OCR, PDF rendering, background sync)
+  # ----------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: legal-os-worker
+    restart: unless-stopped
+    command: ["node", "dist/server.cjs"]
+    environment:
+      - NODE_ENV=production
+      - WORKER_MODE=true
+      - DATABASE_URL=postgresql://legal_user:legal_password@postgres:5432/legal_os_db
+      - REDIS_URL=redis://:redis_secure_pass@redis:6379/0
+      - MEMORY_MONITOR_ENABLED=true
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - legal_os_backend
+      - legal_os_database
+
+  # ----------------------------------------------------------------------------
+  # 4. PostgreSQL Primary Relational Database
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: legal-os-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=legal_os_db
+      - POSTGRES_USER=legal_user
+      - POSTGRES_PASSWORD=legal_password
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    networks:
+      - legal_os_database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U legal_user -d legal_os_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------------------
+  # 5. Redis Cache & Asynchronous Job Queue
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: legal-os-redis
+    restart: unless-stopped
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "redis_secure_pass"]
+    volumes:
+      - redis_data:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    networks:
+      - legal_os_database
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_secure_pass", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ----------------------------------------------------------------------------
+  # 6. Prometheus Observability Engine
+  # ----------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.50.0
+    container_name: legal-os-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - legal_os_backend
+      - legal_os_monitoring
+
+  # ----------------------------------------------------------------------------
+  # 7. Grafana Visualization Dashboards
+  # ----------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.3.3
+    container_name: legal-os-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=legal_grafana_admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - legal_os_monitoring

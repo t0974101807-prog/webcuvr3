@@ -1,0 +1,5 @@
+# SPECKIT SYSTEM CONSTITUTION
+1. THEME: Ultra-dark background (#070d19), contrast text (slate-100), golden amber accents (#e2b13c).
+2. LAYOUT: Single-view navigation. No secondary hidden tabs. Responsive horizontal scrolling for tables.
+3. PERSISTENCE: Must synchronize immediately with local state (LocalStorage fallback).
+4. RECYCLE BIN: Follow Gmail patterns. Empty Trash warnings must trigger confirmation.

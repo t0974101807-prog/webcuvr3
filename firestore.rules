@@ -1,0 +1,67 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    match /qr_records/{recordId} {
+      allow read, write: if true;
+    }
+
+    match /appointments/{appointmentId} {
+      allow read, write: if true;
+    }
+
+    match /test/{testId} {
+      allow read, write: if true;
+    }
+
+    match /call_logs/{callLogId} {
+      allow read, write: if true;
+    }
+
+    match /system_metrics/{metricId} {
+      allow read, write: if true;
+    }
+
+    match /qa_evaluations/{evaluationId} {
+      allow read, write: if true;
+    }
+
+    match /audit_logs/{auditLogId} {
+      allow read, write: if true;
+    }
+
+    match /signed_documents/{docId} {
+      allow read, write: if true;
+    }
+
+    // Also support other synced SQLite tables to ensure background replication does not fail
+    match /{collectionName}/{docId} {
+      allow read, write: if collectionName in [
+        "employees", "clients", "cases", "splits", "payrolls", "monthly_payrolls", 
+        "evaluations", "files", "case_text", "court_schedule", "tasks", "invoices", 
+        "services", "legal_services", "team", "recruitment", 
+        "recruitment_benefits", "recruitment_process", "news", "legal_forms", 
+        "judgments", "precedents", "testimonials", "messages", "visitor_stats", 
+        "record_types", "erp_records", "legal_documents_history", "role_permissions", 
+        "record_messages", "live_messages", "users", "legal_documents", "offices", 
+        "contact_settings", "attendance", "report_unlock_requests", "land_prices", 
+        "subdivision_limits", "hr_departments", "hr_positions", "hr_shifts", 
+        "hr_attendance", "hr_leave_requests", "hr_payrolls", "hr_performances", 
+        "hr_contracts", "hr_equipment", "hr_training", "hr_recruitment", 
+        "hr_workflows", "hr_business_trips", "hr_overtimes", "signed_documents",
+        "land_documents", "settings", "ai_providers", "ai_models", "ai_logs", 
+        "payments", "payment_schedules", "payment_transactions", "payment_events", 
+        "receipts", "case_qr_tokens", "qc_rules", "qc_records", "finance_transactions", 
+        "company_assets", "company_debts", "tax_reports", "budget_plans", 
+        "salary_payment_orders", "voip_calls", "system_performance_metrics", 
+        "quality_assurance_evaluations", "gmail_accounts", "recycle_bin", "portal_activities",
+        "litigation_cases", "consultation_cases", "representation_cases", "compliance_cases", "arbitration_cases"
+      ];
+    }
+
+    // Default catch-all rule
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

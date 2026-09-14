@@ -1,0 +1,27 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: legal-os-pod-viewer
+  namespace: legal-os-prod
+  labels:
+    app: legal-os
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: legal-os-pod-viewer-binding
+  namespace: legal-os-prod
+  labels:
+    app: legal-os
+subjects:
+  - kind: ServiceAccount
+    name: legal-os-sa
+    namespace: legal-os-prod
+roleRef:
+  kind: Role
+  name: legal-os-pod-viewer
+  apiGroup: rbac.authorization.k8s.io

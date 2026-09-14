@@ -1,0 +1,32 @@
+import Database from 'better-sqlite3';
+const db = new Database('lawfirm.db');
+
+const servicesContent = {
+  "Môi trường & ATTP": "### Dịch vụ Môi trường & ATTP\n\nChúng tôi cung cấp các tư vấn chuyên sâu về pháp luật môi trường và an toàn thực phẩm, giúp doanh nghiệp tuân thủ đúng các quy định hiện hành:\n\n- Tư vấn lập Báo cáo đánh giá tác động môi trường (ĐTM).\n- Hỗ trợ thủ tục xin cấp Giấy phép môi trường.\n- Tư vấn và xin cấp Giấy chứng nhận cơ sở đủ điều kiện an toàn thực phẩm.\n- Đại diện khách hàng làm việc với cơ quan chức năng khi có thanh tra, kiểm tra.",
+  "Du lịch & Đầu tư": "### Dịch vụ Du lịch & Đầu tư\n\nViệt Nam là điểm đến hấp dẫn cho du lịch và đầu tư. Chúng tôi hỗ trợ nhà đầu tư các thủ tục pháp lý quan trọng:\n\n- Tư vấn thành lập và xin Giấy phép kinh doanh dịch vụ lữ hành nội địa, quốc tế.\n- Tư vấn lập dự án đầu tư nước ngoài tại Việt Nam.\n- Hỗ trợ điều chỉnh Giấy chứng nhận đăng ký đầu tư.\n- Tư vấn các ưu đãi đầu tư theo quy định pháp luật hiện hành.",
+  "Bất động sản & Doanh nghiệp": "### Dịch vụ Bất động sản & Doanh nghiệp\n\nGiải pháp pháp lý toàn diện cho mọi hoạt động kinh doanh và phát triển dự án của doanh nghiệp:\n\n- Tư vấn pháp lý dự án bất động sản, quy trình thu hồi đất, đền bù giải phóng mặt bằng.\n- Tư vấn Mua bán, Sáp nhập doanh nghiệp (M&A) và Thẩm định pháp lý (Due Diligence).\n- Tư vấn thành lập mới, giải thể, phá sản doanh nghiệp.\n- Hỗ trợ xây dựng cơ cấu quản trị nội bộ và phòng ngừa rủi ro pháp lý.",
+  "Lao động & Kinh doanh": "### Dịch vụ Lao động & Kinh doanh\n\nĐồng hành cùng doanh nghiệp trong việc xây dựng môi trường làm việc tuân thủ pháp luật và hoạt động kinh doanh bền vững:\n\n- Soạn thảo, rà soát hợp đồng lao động, nội quy lao động, thỏa ước lao động tập thể.\n- Đại diện giải quyết các tranh chấp lao động (sa thải, bồi thường chi phí đào tạo...).\n- Xin cấp Giấy phép lao động cho người nước ngoài làm việc tại Việt Nam.\n- Tư vấn đàm phán và giải quyết các tranh chấp trong hoạt động kinh doanh thương mại.",
+  "Tranh tụng & Hình sự": "### Dịch vụ Tranh tụng & Hình sự\n\nĐội ngũ luật sư tranh tụng giàu kinh nghiệm của chúng tôi luôn sẵn sàng bảo vệ quyền lợi hợp pháp tốt nhất cho khách hàng:\n\n- Cử Luật sư tham gia tố tụng bào chữa cho bị can, bị cáo trong các vụ án hình sự.\n- Bảo vệ quyền và lợi ích hợp pháp trong các vụ án Dân sự, Kinh doanh thương mại, Lao động, Hành chính.\n- Tư vấn thu thập chứng cứ, định hướng giải quyết vụ án.\n- Đại diện khách hàng tham gia thương lượng, hòa giải trước và trong quá trình tố tụng.",
+  "Sở hữu trí tuệ & Khác": "### Sở hữu trí tuệ & Các dịch vụ khác\n\nBảo vệ tài sản vô hình và các quyền lợi hợp pháp khác của khách hàng:\n\n- Tư vấn đăng ký xác lập quyền Sở hữu trí tuệ: Nhãn hiệu, Kiểu dáng công nghiệp, Sáng chế, Bản quyền tác giả.\n- Tư vấn và đại diện xử lý các hành vi vi phạm quyền Sở hữu trí tuệ (Hàng giả, hàng nhái...).\n- Giải quyết thủ tục thay đổi thông tin đăng ký kinh doanh, giấy phép con các loại.\n- Tư vấn pháp luật Hôn nhân gia đình, thừa kế và các quan hệ dân sự khác."
+};
+
+const stmtServices = db.prepare("UPDATE services SET content = ? WHERE title = ? AND (content IS NULL OR content = '')");
+for (const [title, content] of Object.entries(servicesContent)) {
+  stmtServices.run(content, title);
+}
+
+const legalServicesContent = {
+  "Tư vấn pháp luật thường xuyên": "### Tư vấn pháp luật thường xuyên\n\nCung cấp dịch vụ tư vấn pháp lý định kỳ cho doanh nghiệp, đóng vai trò như một bộ phận pháp chế thuê ngoài (In-house Counsel) nhằm:\n\n- Rà soát tính hợp pháp của các quyết định, nghị quyết nội bộ.\n- Đánh giá rủi ro pháp lý trong các hợp đồng, giao dịch chuẩn bị ký kết.\n- Cập nhật, cảnh báo các quy định pháp luật mới có ảnh hưởng đến hoạt động kinh doanh.\n- Tư vấn giải quyết các vấn đề pháp lý phát sinh hàng ngày trong doanh nghiệp.",
+  "Tư vấn dự án đầu tư": "### Tư vấn dự án đầu tư\n\nCung cấp giải pháp pháp lý toàn diện từ giai đoạn đàm phán, thành lập đến triển khai dự án đầu tư:\n\n- Đánh giá tính khả thi và điều kiện pháp lý của dự án.\n- Tư vấn lựa chọn hình thức đầu tư và vị trí địa điểm phù hợp.\n- Soạn thảo, đàm phán hợp đồng hợp tác kinh doanh, liên doanh.\n- Thực hiện thủ tục xin cấp/điều chỉnh Giấy chứng nhận đăng ký đầu tư.",
+  "Giải quyết tranh chấp": "### Giải quyết tranh chấp\n\nBảo vệ quyền lợi của khách hàng trong các vụ việc tranh chấp bằng phương thức linh hoạt và tối ưu:\n\n- Tranh chấp hợp đồng mua bán hàng hoá, cung ứng dịch vụ.\n- Tranh chấp giữa các thành viên/cổ đông công ty.\n- Tranh chấp liên quan đến quyền sở hữu trí tuệ, bất động sản.\n- Đại diện thương lượng, hoà giải hoặc tham gia tranh tụng tại Tòa án và Trọng tài.",
+  "Đại diện ngoài tố tụng": "### Đại diện ngoài tố tụng\n\nLuật sư của chúng tôi sẽ đại diện theo ủy quyền để thay mặt khách hàng làm việc với bên thứ ba nhằm giải quyết các vấn đề pháp lý một cách chuyên nghiệp:\n\n- Đại diện khách hàng tham gia các cuộc họp, đàm phán với đối tác, khách hàng.\n- Đại diện làm việc với các cơ quan hành chính nhà nước, cơ quan công an, thuế, hải quan.\n- Đại diện thực hiện các thủ tục giải quyết khiếu nại, tố cáo.\n- Đại diện thực hiện các thủ tục thi hành án dân sự.",
+  "Dịch vụ giấy phép": "### Dịch vụ giấy phép\n\nHỗ trợ cá nhân/doanh nghiệp hoàn thiện các thủ tục hành chính, xin cấp các loại giấy tờ, giấy phép cần thiết cho hoạt động kinh doanh:\n\n- Giấy phép kinh doanh dịch vụ lữ hành, vận tải, bưu chính.\n- Giấy phép thành lập cơ sở giáo dục, trung tâm ngoại ngữ.\n- Giấy chứng nhận đủ điều kiện an ninh trật tự, phòng cháy chữa cháy.\n- Giấy phép cơ sở đủ điều kiện vệ sinh an toàn thực phẩm, công bố tiêu chuẩn chất lượng sản phẩm.",
+  "Tư vấn hợp đồng": "### Tư vấn hợp đồng\n\nKiểm soát rủi ro và tối đa hóa lợi ích cho khách hàng trong các giao dịch thông qua vai trò tư vấn hợp đồng:\n\n- Đàm phán, xây dựng dự thảo các loại hợp đồng kinh tế, thương mại, dân sự, lao động.\n- Rà soát, chỉ ra các điểm bất lợi, rủi ro trong hợp đồng do đối tác đưa ra và đề xuất phương án sửa đổi.\n- Tư vấn thủ tục và các điều kiện đảm bảo hiệu lực của hợp đồng.\n- Tư vấn giải quyết các vướng mắc, tranh chấp phát sinh trong quá trình thực hiện hợp đồng."
+};
+
+const stmtLegal = db.prepare("UPDATE legal_services SET content = ? WHERE title = ? AND (content IS NULL OR content = '')");
+for (const [title, content] of Object.entries(legalServicesContent)) {
+  stmtLegal.run(content, title);
+}
+
+console.log("Updated content for services and legal_services");

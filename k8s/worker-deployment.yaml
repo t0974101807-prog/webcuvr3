@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legal-os-worker
+  namespace: legal-os-prod
+  labels:
+    app: legal-os
+    tier: worker
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: legal-os
+      tier: worker
+  template:
+    metadata:
+      labels:
+        app: legal-os
+        tier: worker
+    spec:
+      serviceAccountName: legal-os-sa
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: legal-os-worker
+          image: asia-southeast1-docker.pkg.dev/legal-os-prod/app/legal-os-api:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["node", "dist/server.cjs"]
+          envFrom:
+            - configMapRef:
+                name: legal-os-config
+          env:
+            - name: WORKER_MODE
+              value: "true"
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=1536"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: legal-os-secrets
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: legal-os-secrets
+                  key: REDIS_URL
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: uploads-volume
+              mountPath: /app/uploads
+      volumes:
+        - name: tmp-volume
+          emptyDir: {}
+        - name: uploads-volume
+          emptyDir: {}

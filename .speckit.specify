@@ -1,0 +1,15 @@
+{
+  "project": "LawFirm ERP Cockpit",
+  "major_categories": [
+    "Tranh tụng",
+    "Tư vấn Pháp luật",
+    "Đại diện Ngoài tố tụng",
+    "Pháp chế & Nội bộ",
+    "Trọng tài & Hòa giải",
+    "Ban Giám đốc"
+  ],
+  "verification_rules": {
+    "columns_count": 16,
+    "recycle_bin_retention_days": 30
+  }
+}

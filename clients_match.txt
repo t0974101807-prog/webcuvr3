@@ -1,0 +1,6 @@
+777:              label={language === "vi" ? "Khách" : "Clients"}
+1150:              <Clients language={language} records={records} />
+11054:        const uniqueClients = new Set(userFilteredRecords.map((r) => r.client))
+11056:        overviewValue = uniqueClients;
+16295:  const [clients, setClients] = useState<any[]>([]);
+16299:    api.req("/api/clients").then(setClients).catch(console.error);

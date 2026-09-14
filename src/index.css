@@ -1,0 +1,1001 @@
+@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,300;1,400;1,500;1,600;1,700&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400;1,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+@variant dark (&:where(.dark, .dark *));
+@plugin "@tailwindcss/typography";
+@source "../src";
+@source "../index.html";
+
+@theme {
+  --color-slate-50: #F4F6F9;
+  --color-slate-900: #080F1E;
+  
+  --color-primary: #0C3645; /* Elegant Deep Teal-Blue - professional & premium */
+  --color-primary-light: #16566D; /* Lighter Deep Teal-Blue */
+  --color-accent: #D4AF37; /* Elegant Classic Brass Gold */
+  --color-accent-hover: #BDA230; /* Deep Gold Honey */
+  --color-text-dark: #1E293B;
+  --color-text-light: #F8FAFC;
+
+  --font-sans: "Be Vietnam Pro", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-serif: "Playfair Display", "Times New Roman", Times, Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+:root {
+  --color-primary: #0C3645;
+  --color-primary-light: #16566D;
+  --color-accent: #D4AF37;
+  --color-accent-hover: #BDA230;
+  --color-text-dark: #1E293B;
+  --color-text-light: #F8FAFC;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
+  }
+  
+  body {
+    background-color: var(--color-slate-50);
+    color: var(--color-slate-900);
+    font-family: var(--font-sans);
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  html.dark {
+    color-scheme: dark;
+    --color-slate-50: #0A0E17; /* Base page background - very deep premium slate-blue */
+    --color-slate-900: #F1F5F9; /* Primary text in dark mode */
+    --color-primary: #0F2D3A; /* Refined dark teal-blue background for dark mode components */
+    --color-primary-light: #163D4E; /* Lighter refined dark teal-blue */
+    --color-accent: #E5C047; /* Elegant warm classic brass gold for dark mode */
+    --color-accent-hover: #F2D263; /* Lighter warm gold */
+    --color-text-dark: #F8FAFC;
+    --color-text-light: #0A0E17;
+  }
+
+  html.dark body {
+    background-color: #0A0E17 !important;
+    color: #CBD5E1 !important;
+  }
+
+  /* --- STRICT Z-AXIS DARK MODE LAYER ELEVATIONS (Closer = Lighter) --- */
+
+  /* Level 1: Main background containers / section panels (replacing white with a gorgeous, deep navy-slate card) */
+  html.dark .bg-white {
+    background-color: #121824 !important;
+    border-color: #1E293B !important;
+  }
+
+  /* Level 2: Inner cards, list panels, secondary sideboards, calendar cards (replacing light greys with elevated slate-blue) */
+  html.dark .bg-slate-50,
+  html.dark .bg-slate-100,
+  html.dark .bg-gray-50,
+  html.dark .bg-gray-100,
+  html.dark .bg-zinc-50,
+  html.dark .bg-zinc-100,
+  html.dark .bg-stone-50,
+  html.dark .bg-stone-100,
+  html.dark .bg-neutral-50,
+  html.dark .bg-neutral-100 {
+    background-color: #1B2336 !important;
+    border-color: #26324D !important;
+  }
+
+  /* Level 3: Elevated elements, hovered items, tags, focused input backgrounds, tables, modal contents */
+  html.dark .bg-slate-200,
+  html.dark .bg-slate-300,
+  html.dark .bg-gray-200,
+  html.dark .bg-gray-300,
+  html.dark .bg-zinc-200,
+  html.dark .bg-zinc-300,
+  html.dark .bg-stone-200,
+  html.dark .bg-stone-300,
+  html.dark .bg-neutral-200,
+  html.dark .bg-neutral-300 {
+    background-color: #24304A !important;
+    border-color: #314266 !important;
+  }
+
+  /* Custom Ivory (#FAF9F6) Background override in dark mode map to base dark */
+  html.dark .bg-\[\#FAF9F6\],
+  html.dark .bg-\[\#FAF9F6\]\/50 {
+    background-color: #0A0E17 !important;
+  }
+
+  /* Opacity background color overrides in dark mode */
+  html.dark [class*="bg-slate-50/"],
+  html.dark [class*="bg-slate-100/"],
+  html.dark [class*="bg-slate-200/"],
+  html.dark [class*="bg-gray-50/"],
+  html.dark [class*="bg-gray-100/"],
+  html.dark [class*="bg-gray-200/"],
+  html.dark [class*="bg-zinc-50/"],
+  html.dark [class*="bg-zinc-100/"],
+  html.dark [class*="bg-zinc-200/"],
+  html.dark [class*="bg-neutral-50/"],
+  html.dark [class*="bg-neutral-100/"],
+  html.dark [class*="bg-neutral-200/"] {
+    background-color: rgba(27, 35, 54, 0.6) !important;
+  }
+
+  html.dark [class*="bg-indigo-50/"],
+  html.dark [class*="bg-blue-50/"] {
+    background-color: rgba(56, 189, 248, 0.15) !important;
+  }
+
+  /* Deactivate white gradients in dark mode and fallback to solid elegant dark slate blue */
+  html.dark [class*="from-white"],
+  html.dark [class*="to-white"],
+  html.dark [class*="via-white"],
+  html.dark [class*="from-slate-50"],
+  html.dark [class*="to-slate-50"],
+  html.dark [class*="via-slate-50"],
+  html.dark [class*="from-slate-100"],
+  html.dark [class*="to-slate-100"],
+  html.dark [class*="via-slate-100"],
+  html.dark [class*="from-slate-50/50"],
+  html.dark [class*="to-slate-50/50"],
+  html.dark [class*="via-slate-50/50"] {
+    background-image: none !important;
+    background-color: #121824 !important;
+  }
+
+  /* --- WCAG COMPLIANT TYPOGRAPHY CONTRAST IN DARK MODE --- */
+
+  /* Primary text (High contrast, elegant off-white) */
+  html.dark .text-slate-950,
+  html.dark .text-slate-900,
+  html.dark .text-slate-800,
+  html.dark .text-gray-950,
+  html.dark .text-gray-900,
+  html.dark .text-gray-800,
+  html.dark .text-zinc-950,
+  html.dark .text-zinc-900,
+  html.dark .text-zinc-800,
+  html.dark .text-stone-950,
+  html.dark .text-stone-900,
+  html.dark .text-stone-800,
+  html.dark .text-neutral-950,
+  html.dark .text-neutral-900,
+  html.dark .text-neutral-800 {
+    color: #F1F5F9 !important;
+  }
+
+  /* Secondary / Body text (Easy on the eyes, polished slate grey) */
+  html.dark .text-slate-700,
+  html.dark .text-slate-600,
+  html.dark .text-slate-500,
+  html.dark .text-gray-700,
+  html.dark .text-gray-600,
+  html.dark .text-gray-500,
+  html.dark .text-zinc-700,
+  html.dark .text-zinc-600,
+  html.dark .text-zinc-500,
+  html.dark .text-stone-700,
+  html.dark .text-stone-600,
+  html.dark .text-stone-500,
+  html.dark .text-neutral-700,
+  html.dark .text-neutral-600,
+  html.dark .text-neutral-500 {
+    color: #CBD5E1 !important;
+  }
+
+  /* Muted metadata / secondary helper text */
+  html.dark .text-slate-400,
+  html.dark .text-gray-400,
+  html.dark .text-zinc-400,
+  html.dark .text-stone-400,
+  html.dark .text-neutral-400 {
+    color: #94A3B8 !important;
+  }
+
+  /* Faint guidelines / placeholders */
+  html.dark .text-slate-300,
+  html.dark .text-gray-300,
+  html.dark .text-zinc-300,
+  html.dark .text-stone-300,
+  html.dark .text-neutral-300 {
+    color: #CBD5E1 !important;
+  }
+
+  /* Responsive, layer-mapped borders */
+  html.dark .border-slate-100,
+  html.dark [class*="border-slate-100/"],
+  html.dark .border-gray-100,
+  html.dark [class*="border-gray-100/"],
+  html.dark .border-zinc-100,
+  html.dark [class*="border-zinc-100/"],
+  html.dark .border-stone-100,
+  html.dark [class*="border-stone-100/"],
+  html.dark .border-neutral-100,
+  html.dark [class*="border-neutral-100/"] {
+    border-color: #1E293B !important;
+  }
+
+  html.dark .border-slate-200,
+  html.dark [class*="border-slate-200/"],
+  html.dark .border-gray-200,
+  html.dark [class*="border-gray-200/"],
+  html.dark .border-zinc-200,
+  html.dark [class*="border-zinc-200/"],
+  html.dark .border-stone-200,
+  html.dark [class*="border-stone-200/"],
+  html.dark .border-neutral-200,
+  html.dark [class*="border-neutral-200/"] {
+    border-color: #26324D !important;
+  }
+
+  html.dark .border-slate-300,
+  html.dark [class*="border-slate-300/"],
+  html.dark .border-gray-300,
+  html.dark [class*="border-gray-300/"],
+  html.dark .border-zinc-300,
+  html.dark [class*="border-zinc-300/"],
+  html.dark .border-stone-300,
+  html.dark [class*="border-stone-300/"],
+  html.dark .border-neutral-300,
+  html.dark [class*="border-neutral-300/"] {
+    border-color: #314266 !important;
+  }
+
+  /* Form Elements in Dark Mode (Inset styled, beautiful premium fields) */
+  html.dark input:not(.bg-transparent),
+  html.dark textarea:not(.bg-transparent),
+  html.dark select:not(.bg-transparent) {
+    background-color: #0D121D !important;
+    border-color: #26324D !important;
+  }
+
+  html.dark input,
+  html.dark textarea,
+  html.dark select {
+    color: #F1F5F9 !important;
+    outline: none !important;
+  }
+
+  html.dark input:focus,
+  html.dark textarea:focus,
+  html.dark select:focus {
+    border-color: #E5C047 !important;
+    box-shadow: 0 0 0 2px rgba(229, 192, 71, 0.2) !important;
+  }
+
+  /* Dialogs & Modals */
+  html.dark [role="dialog"],
+  html.dark .fixed .bg-white {
+    background-color: #0D121D !important;
+    border: 1px solid rgba(229, 192, 71, 0.25) !important;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6) !important;
+  }
+
+  /* Tables styling in dark mode */
+  html.dark table {
+    border-color: #1E293B !important;
+  }
+  html.dark thead tr {
+    background-color: #0B1019 !important;
+    border-bottom: 2px solid #1E293B !important;
+  }
+  html.dark thead th {
+    color: #94A3B8 !important;
+    font-weight: 700 !important;
+  }
+  html.dark tbody tr {
+    border-bottom: 1px solid #1E293B !important;
+  }
+  html.dark tbody tr:hover {
+    background-color: rgba(22, 86, 109, 0.2) !important; /* Elegant subtle navy-teal highlight */
+  }
+
+  /* --- BRANDING CONTRAST CORRECTION IN DARK MODE --- */
+
+  /* Primary brand text: replaces cheap cyan with polished Slate Teal-Blue */
+  html.dark .text-\[\#0a2d37\],
+  html.dark .text-\[\#072530\],
+  html.dark .text-\[\#051f28\],
+  html.dark .text-\[\#0C3645\],
+  html.dark .text-primary,
+  html.dark .text-\[var\(--color-primary\)\],
+  html.dark .text-\[var\(--color-primary-light\)\],
+  html.dark .text-primary-light {
+    color: #56B2CD !important; /* Polished and rich corporate Slate Teal-Blue */
+  }
+
+  html.dark .bg-\[\#0a2d37\],
+  html.dark .bg-\[\#0C3645\],
+  html.dark .bg-\[var\(--color-primary\)\],
+  html.dark .bg-primary {
+    background-color: var(--color-primary) !important;
+  }
+
+  html.dark nav.bg-white\/95 {
+    background-color: rgba(18, 24, 36, 0.95) !important;
+    border-color: #1E293B !important;
+  }
+
+  html.dark .bg-\[\#0a2d37\]\/10,
+  html.dark .bg-\[\#0C3645\]\/10,
+  html.dark .bg-\[var\(--color-primary\)\]\/10 {
+    background-color: rgba(86, 178, 205, 0.15) !important;
+  }
+
+  /* Accent gold elements translation */
+  html.dark .text-\[var\(--color-accent\)\],
+  html.dark .text-accent {
+    color: #E5C047 !important;
+  }
+
+  /* Light Alerts & Notices Background Color Translation in Dark Mode */
+  html.dark .bg-amber-50,
+  html.dark .bg-yellow-50 {
+    background-color: rgba(229, 192, 71, 0.1) !important;
+    border-color: rgba(229, 192, 71, 0.25) !important;
+    color: #FEF3C7 !important;
+  }
+  html.dark .bg-emerald-50,
+  html.dark .bg-green-50 {
+    background-color: rgba(16, 185, 129, 0.1) !important;
+    border-color: rgba(16, 185, 129, 0.25) !important;
+    color: #D1FAE5 !important;
+  }
+  html.dark .bg-indigo-50,
+  html.dark .bg-blue-50 {
+    background-color: rgba(56, 189, 248, 0.1) !important;
+    border-color: rgba(56, 189, 248, 0.25) !important;
+    color: #DBEAFE !important;
+  }
+  html.dark .bg-rose-50,
+  html.dark .bg-red-50 {
+    background-color: rgba(239, 68, 68, 0.1) !important;
+    border-color: rgba(239, 68, 68, 0.25) !important;
+    color: #FEE2E2 !important;
+  }
+
+  html.dark .bg-amber-100,
+  html.dark .bg-yellow-100 {
+    background-color: rgba(229, 192, 71, 0.2) !important;
+    border-color: rgba(229, 192, 71, 0.35) !important;
+  }
+  html.dark .bg-emerald-100,
+  html.dark .bg-green-100 {
+    background-color: rgba(16, 185, 129, 0.2) !important;
+    border-color: rgba(16, 185, 129, 0.35) !important;
+  }
+  html.dark .bg-indigo-100,
+  html.dark .bg-blue-100 {
+    background-color: rgba(56, 189, 248, 0.2) !important;
+    border-color: rgba(56, 189, 248, 0.35) !important;
+  }
+  html.dark .bg-rose-100,
+  html.dark .bg-red-100 {
+    background-color: rgba(239, 68, 68, 0.2) !important;
+    border-color: rgba(239, 68, 68, 0.35) !important;
+  }
+
+  /* Medium-Dark Text colors in Dark Mode (Shift to beautiful lighter counterparts) */
+  html.dark .text-indigo-600,
+  html.dark .text-indigo-700 {
+    color: #818CF8 !important;
+  }
+  html.dark .text-blue-600,
+  html.dark .text-blue-700 {
+    color: #60A5FA !important;
+  }
+  html.dark .text-emerald-600,
+  html.dark .text-emerald-700 {
+    color: #34D399 !important;
+  }
+  html.dark .text-green-600,
+  html.dark .text-green-700 {
+    color: #4ADE80 !important;
+  }
+  html.dark .text-amber-500,
+  html.dark .text-amber-600,
+  html.dark .text-amber-700 {
+    color: #FBBF24 !important;
+  }
+  html.dark .text-red-500,
+  html.dark .text-red-600,
+  html.dark .text-red-700 {
+    color: #F87171 !important;
+  }
+  html.dark .text-teal-600,
+  html.dark .text-teal-700 {
+    color: #2DD4BF !important;
+  }
+
+  /* Recharts Tooltip Theme-safe Contrast Fixes */
+  html.dark .recharts-default-tooltip {
+    background-color: #0D121D !important;
+    border-color: #1E293B !important;
+    color: #F1F5F9 !important;
+  }
+  html.dark .recharts-tooltip-label,
+  html.dark .recharts-tooltip-item,
+  html.dark .recharts-tooltip-item-name,
+  html.dark .recharts-tooltip-item-value {
+    color: #F1F5F9 !important;
+  }
+  
+  html:not(.dark) .recharts-default-tooltip {
+    background-color: #FFFFFF !important;
+    border-color: #E2E8F0 !important;
+    color: #0F172A !important;
+  }
+  html:not(.dark) .recharts-tooltip-label,
+  html:not(.dark) .recharts-tooltip-item,
+  html:not(.dark) .recharts-tooltip-item-name,
+  html:not(.dark) .recharts-tooltip-item-value {
+    color: #0F172A !important;
+  }
+
+  /* --- CONTRAST PROTECTION NESTINGS (Ensures nested text never matches bg color) --- */
+
+  /* 1. Prevent nested gray/muted text inside white/light cards from becoming too faint */
+  html:not(.dark) .bg-white .text-slate-300,
+  html:not(.dark) .bg-white .text-gray-300,
+  html:not(.dark) .bg-slate-50 .text-slate-300,
+  html:not(.dark) .bg-slate-50 .text-gray-300,
+  html:not(.dark) .bg-slate-100 .text-slate-300,
+  html:not(.dark) .bg-slate-100 .text-gray-300,
+  html:not(.dark) .bg-gray-50 .text-slate-300,
+  html:not(.dark) .bg-gray-50 .text-gray-300,
+  html:not(.dark) .bg-gray-100 .text-slate-300,
+  html:not(.dark) .bg-gray-100 .text-gray-300 {
+    color: #64748B !important; /* High contrast muted slate gray */
+  }
+
+  html:not(.dark) .bg-white .text-slate-400,
+  html:not(.dark) .bg-white .text-gray-400,
+  html:not(.dark) .bg-slate-50 .text-slate-400,
+  html:not(.dark) .bg-slate-50 .text-gray-400,
+  html:not(.dark) .bg-slate-100 .text-slate-400,
+  html:not(.dark) .bg-slate-100 .text-gray-400,
+  html:not(.dark) .bg-gray-50 .text-slate-400,
+  html:not(.dark) .bg-gray-50 .text-gray-400,
+  html:not(.dark) .bg-gray-100 .text-slate-400,
+  html:not(.dark) .bg-gray-100 .text-gray-400 {
+    color: #475569 !important; /* Highly legible and clear slate grey */
+  }
+
+  /* 2. Light Mode: Force text inside solid dark-background containers to always be high contrast white */
+  .bg-primary,
+  .bg-primary-light,
+  [class*="bg-primary"],
+  .bg-slate-900,
+  .bg-slate-800,
+  .bg-gray-900,
+  .bg-gray-800,
+  .bg-zinc-900,
+  .bg-zinc-800,
+  .bg-neutral-900,
+  .bg-neutral-800 {
+    color: #F8FAFC !important; /* Elegant off-white */
+  }
+
+  .bg-primary p,
+  .bg-primary-light p,
+  .bg-slate-900 p,
+  .bg-slate-800 p,
+  .bg-gray-900 p,
+  .bg-gray-800 p,
+  .bg-primary span:not([class*="text-"]),
+  .bg-primary-light span:not([class*="text-"]),
+  .bg-slate-900 span:not([class*="text-"]),
+  .bg-slate-800 span:not([class*="text-"]),
+  .bg-gray-900 span:not([class*="text-"]),
+  .bg-gray-800 span:not([class*="text-"]) {
+    color: rgba(248, 250, 252, 0.85) !important;
+  }
+
+  .bg-primary h1, .bg-primary h2, .bg-primary h3, .bg-primary h4, .bg-primary h5, .bg-primary h6,
+  .bg-primary-light h1, .bg-primary-light h2, .bg-primary-light h3, .bg-primary-light h4,
+  .bg-slate-900 h1, .bg-slate-900 h2, .bg-slate-900 h3, .bg-slate-900 h4,
+  .bg-slate-800 h1, .bg-slate-800 h2, .bg-slate-800 h3, .bg-slate-800 h4,
+  .bg-gray-900 h1, .bg-gray-900 h2, .bg-gray-900 h3, .bg-gray-900 h4,
+  .bg-gray-800 h1, .bg-gray-800 h2, .bg-gray-800 h3, .bg-gray-800 h4 {
+    color: #FFFFFF !important;
+  }
+
+  /* Correct any mistakenly nested dark text classes inside dark containers to be light */
+  .bg-primary [class*="text-slate-9"],
+  .bg-primary [class*="text-gray-9"],
+  .bg-primary [class*="text-slate-8"],
+  .bg-primary [class*="text-gray-8"],
+  .bg-primary [class*="text-slate-7"],
+  .bg-primary [class*="text-gray-7"],
+  .bg-primary-light [class*="text-slate-9"],
+  .bg-primary-light [class*="text-gray-9"],
+  .bg-primary-light [class*="text-slate-8"],
+  .bg-primary-light [class*="text-gray-8"],
+  .bg-slate-900 [class*="text-slate-9"],
+  .bg-slate-900 [class*="text-gray-9"],
+  .bg-slate-900 [class*="text-slate-8"],
+  .bg-slate-900 [class*="text-gray-8"],
+  .bg-slate-800 [class*="text-slate-9"],
+  .bg-slate-800 [class*="text-gray-9"],
+  .bg-slate-800 [class*="text-slate-8"],
+  .bg-slate-800 [class*="text-gray-8"],
+  .bg-gray-900 [class*="text-slate-9"],
+  .bg-gray-900 [class*="text-gray-9"],
+  .bg-gray-900 [class*="text-slate-8"],
+  .bg-gray-900 [class*="text-gray-8"] {
+    color: #F8FAFC !important;
+  }
+
+  /* Optimize layout scaling on larger viewports to prevent disproportionate rendering */
+  @media (min-width: 1440px) {
+    html {
+      font-size: 16px; /* Stable, readable base size */
+    }
+  }
+
+  @media (min-width: 1920px) {
+    html {
+      font-size: 17px; /* Elevate slightly for large ultra-wide monitors to maintain optimal scale & balance */
+    }
+  }
+
+  @media (min-width: 2560px) {
+    html {
+      font-size: 18px; /* High-DPI 2K/4K scaling */
+    }
+  }
+
+  /* Premium selections */
+  ::selection {
+    background-color: var(--color-accent);
+    color: #000000;
+  }
+
+  /* Custom high-end scrollbars */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+  }
+}
+
+/* Custom premium helper styles to make the dashboard look extremely vibrant & alive */
+.glow-accent {
+  box-shadow: 0 0 15px rgba(245, 176, 65, 0.2);
+}
+
+.glow-primary {
+  box-shadow: 0 4px 20px rgba(11, 30, 51, 0.12);
+}
+
+.card-hover-effect {
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.card-hover-effect:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 30px rgba(11, 30, 51, 0.08);
+  border-color: rgba(245, 176, 65, 0.3);
+}
+
+@keyframes pulse-gold {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(245, 176, 65, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(245, 176, 65, 0);
+  }
+}
+
+.animate-pulse-gold {
+  animation: pulse-gold 2s infinite;
+}
+
+@keyframes ripple-wave {
+  0% {
+    box-shadow: 0 0 0 0 rgba(22, 86, 109, 0.5), 0 0 0 8px rgba(22, 86, 109, 0.3), 0 0 0 15px rgba(22, 86, 109, 0.1);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(22, 86, 109, 0), 0 0 0 20px rgba(22, 86, 109, 0), 0 0 0 35px rgba(22, 86, 109, 0);
+  }
+}
+
+@keyframes ripple-wave-green {
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 200, 86, 0.5), 0 0 0 8px rgba(16, 200, 86, 0.3), 0 0 0 15px rgba(16, 200, 86, 0.1);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(16, 200, 86, 0), 0 0 0 20px rgba(16, 200, 86, 0), 0 0 0 35px rgba(16, 200, 86, 0);
+  }
+}
+
+@keyframes ripple-wave-gold {
+  0% {
+    box-shadow: 0 0 0 0 rgba(212, 175, 55, 0.5), 0 0 0 8px rgba(212, 175, 55, 0.3), 0 0 0 15px rgba(212, 175, 55, 0.1);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(212, 175, 55, 0), 0 0 0 20px rgba(212, 175, 55, 0), 0 0 0 35px rgba(212, 175, 55, 0);
+  }
+}
+
+.animate-ripple-blue {
+  animation: ripple-wave 2.5s infinite;
+}
+
+.animate-ripple-green {
+  animation: ripple-wave-green 2.5s infinite;
+}
+
+.animate-ripple-gold {
+  animation: ripple-wave-gold 2.5s infinite;
+}
+
+@keyframes ring-shake {
+  0%, 100% { transform: rotate(0); }
+  10%, 30%, 50%, 70%, 90% { transform: rotate(-10deg); }
+  20%, 40%, 60%, 80% { transform: rotate(10deg); }
+}
+
+.animate-ring {
+  animation: ring-shake 1.5s infinite;
+  transform-origin: center;
+}
+
+/* Custom print styles for standard paper printing of receipts */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  #print-receipt-modal, #print-receipt-modal * {
+    visibility: visible !important;
+  }
+  #print-receipt-modal {
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    background: white !important;
+    color: black !important;
+    z-index: 999999 !important;
+    padding: 1.5in 1in 1in 1in !important;
+    box-shadow: none !important;
+    border: none !important;
+    overflow: visible !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
+/* --- THEME ISLAND SYSTEM (INDEPENDENT COMPONENT THEMES) --- */
+
+/* 1. FORCE LIGHT MODE inside .theme-light, even if global html has .dark */
+html.dark .theme-light,
+html.dark .theme-light .bg-white {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+html.dark .theme-light .bg-slate-50,
+html.dark .theme-light .bg-slate-100,
+html.dark .theme-light .bg-gray-50,
+html.dark .theme-light .bg-gray-100,
+html.dark .theme-light .bg-zinc-50,
+html.dark .theme-light .bg-zinc-100,
+html.dark .theme-light .bg-stone-50,
+html.dark .theme-light .bg-stone-100,
+html.dark .theme-light .bg-neutral-50,
+html.dark .theme-light .bg-neutral-100 {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+}
+
+html.dark .theme-light .bg-slate-200,
+html.dark .theme-light .bg-slate-300,
+html.dark .theme-light .bg-gray-200,
+html.dark .theme-light .bg-gray-300,
+html.dark .theme-light .bg-zinc-200,
+html.dark .theme-light .bg-zinc-300,
+html.dark .theme-light .bg-stone-200,
+html.dark .theme-light .bg-stone-300,
+html.dark .theme-light .bg-neutral-200,
+html.dark .theme-light .bg-neutral-300 {
+  background-color: #f1f5f9 !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.dark .theme-light .text-slate-950,
+html.dark .theme-light .text-slate-900,
+html.dark .theme-light .text-slate-800,
+html.dark .theme-light .text-gray-950,
+html.dark .theme-light .text-gray-900,
+html.dark .theme-light .text-gray-800,
+html.dark .theme-light .text-zinc-950,
+html.dark .theme-light .text-zinc-900,
+html.dark .theme-light .text-zinc-800,
+html.dark .theme-light .text-stone-950,
+html.dark .theme-light .text-stone-900,
+html.dark .theme-light .text-stone-800,
+html.dark .theme-light .text-neutral-950,
+html.dark .theme-light .text-neutral-900,
+html.dark .theme-light .text-neutral-800 {
+  color: #0f172a !important;
+}
+
+html.dark .theme-light .text-slate-700,
+html.dark .theme-light .text-slate-600,
+html.dark .theme-light .text-slate-500,
+html.dark .theme-light .text-gray-700,
+html.dark .theme-light .text-gray-600,
+html.dark .theme-light .text-gray-500,
+html.dark .theme-light .text-zinc-700,
+html.dark .theme-light .text-zinc-600,
+html.dark .theme-light .text-zinc-500,
+html.dark .theme-light .text-stone-700,
+html.dark .theme-light .text-stone-600,
+html.dark .theme-light .text-stone-500,
+html.dark .theme-light .text-neutral-700,
+html.dark .theme-light .text-neutral-600,
+html.dark .theme-light .text-neutral-500 {
+  color: #475569 !important;
+}
+
+html.dark .theme-light .text-slate-400,
+html.dark .theme-light .text-gray-400,
+html.dark .theme-light .text-zinc-400,
+html.dark .theme-light .text-stone-400,
+html.dark .theme-light .text-neutral-400 {
+  color: #64748b !important;
+}
+
+html.dark .theme-light .text-slate-300,
+html.dark .theme-light .text-gray-300,
+html.dark .theme-light .text-zinc-300,
+html.dark .theme-light .text-stone-300,
+html.dark .theme-light .text-neutral-300 {
+  color: #94a3b8 !important;
+}
+
+html.dark .theme-light .border-slate-100,
+html.dark .theme-light .border-gray-100,
+html.dark .theme-light .border-zinc-100,
+html.dark .theme-light .border-stone-100,
+html.dark .theme-light .border-neutral-100 {
+  border-color: #f1f5f9 !important;
+}
+
+html.dark .theme-light .border-slate-200,
+html.dark .theme-light .border-gray-200,
+html.dark .theme-light .border-zinc-200,
+html.dark .theme-light .border-stone-200,
+html.dark .theme-light .border-neutral-200 {
+  border-color: #e2e8f0 !important;
+}
+
+html.dark .theme-light .border-slate-300,
+html.dark .theme-light .border-gray-300,
+html.dark .theme-light .border-zinc-300,
+html.dark .theme-light .border-slate-300,
+html.dark .theme-light .border-gray-300,
+html.dark .theme-light .border-zinc-300,
+html.dark .theme-light .border-stone-300,
+html.dark .theme-light .border-neutral-300 {
+  border-color: #cbd5e1 !important;
+}
+
+/* --- THEME COMPATIBILITY OVERRIDES FOR NESTED AND TAILWIND dark: CLASSES --- */
+
+/* 1a. Forcing light backgrounds on dark-utility classes inside .theme-light when global html has .dark */
+html.dark .theme-light .dark\:bg-slate-900,
+html.dark .theme-light .dark\:bg-slate-950,
+html.dark .theme-light .dark\:bg-slate-900\/80,
+html.dark .theme-light .dark\:bg-slate-800,
+html.dark .theme-light .dark\:bg-slate-800\/80,
+html.dark .theme-light .dark\:bg-\[\#0B0F19\],
+html.dark .theme-light .dark\:bg-\[\#090D16\],
+html.dark .theme-light .dark\:bg-\[\#111827\],
+html.dark .theme-light .dark\:bg-\[\#121824\],
+html.dark .theme-light .bg-slate-900,
+html.dark .theme-light .bg-slate-950,
+html.dark .theme-light .bg-\[\#0B0F19\],
+html.dark .theme-light .bg-\[\#090D16\],
+html.dark .theme-light .bg-\[\#111827\],
+html.dark .theme-light .bg-\[\#121824\] {
+  background-color: #ffffff !important;
+}
+
+html.dark .theme-light .dark\:bg-slate-900\/50,
+html.dark .theme-light .dark\:bg-slate-800\/50 {
+  background-color: #f1f5f9 !important;
+}
+
+/* 1b. Forcing dark text to be light-friendly inside .theme-light when global html has .dark */
+html.dark .theme-light .dark\:text-slate-100,
+html.dark .theme-light .dark\:text-slate-200,
+html.dark .theme-light .dark\:text-slate-300,
+html.dark .theme-light .dark\:text-white,
+html.dark .theme-light .text-slate-100,
+html.dark .theme-light .text-slate-200,
+html.dark .theme-light .text-slate-300,
+html.dark .theme-light .text-white {
+  color: #0f172a !important;
+}
+
+html.dark .theme-light .dark\:text-slate-400,
+html.dark .theme-light .dark\:text-slate-500,
+html.dark .theme-light .text-slate-400,
+html.dark .theme-light .text-slate-500 {
+  color: #475569 !important;
+}
+
+/* 1c. Force borders inside .theme-light to remain visible and soft */
+html.dark .theme-light .dark\:border-slate-800,
+html.dark .theme-light .dark\:border-slate-700,
+html.dark .theme-light .dark\:border-slate-800\/80,
+html.dark .theme-light .border-slate-800,
+html.dark .theme-light .border-slate-700 {
+  border-color: #cbd5e1 !important;
+}
+
+/* 2. FORCE DARK MODE inside .theme-dark, even if global html is NOT .dark */
+:not(html.dark) .theme-dark,
+:not(html.dark) .theme-dark .bg-white {
+  background-color: #121824 !important;
+  border-color: #1E293B !important;
+}
+
+:not(html.dark) .theme-dark .bg-slate-50,
+:not(html.dark) .theme-dark .bg-slate-100,
+:not(html.dark) .theme-dark .bg-gray-50,
+:not(html.dark) .theme-dark .bg-gray-100,
+:not(html.dark) .theme-dark .bg-zinc-50,
+:not(html.dark) .theme-dark .bg-zinc-100,
+:not(html.dark) .theme-dark .bg-stone-50,
+:not(html.dark) .theme-dark .bg-stone-100,
+:not(html.dark) .theme-dark .bg-neutral-50,
+:not(html.dark) .theme-dark .bg-neutral-100 {
+  background-color: #1B2336 !important;
+  border-color: #26324D !important;
+}
+
+:not(html.dark) .theme-dark .bg-slate-200,
+:not(html.dark) .theme-dark .bg-slate-300,
+:not(html.dark) .theme-dark .bg-gray-200,
+:not(html.dark) .theme-dark .bg-gray-300,
+:not(html.dark) .theme-dark .bg-zinc-200,
+:not(html.dark) .theme-dark .bg-zinc-300,
+:not(html.dark) .theme-dark .bg-stone-200,
+:not(html.dark) .theme-dark .bg-stone-300,
+:not(html.dark) .theme-dark .bg-neutral-200,
+:not(html.dark) .theme-dark .bg-neutral-300 {
+  background-color: #24304A !important;
+  border-color: #314266 !important;
+}
+
+:not(html.dark) .theme-dark .text-slate-950,
+:not(html.dark) .theme-dark .text-slate-900,
+:not(html.dark) .theme-dark .text-slate-800,
+:not(html.dark) .theme-dark .text-gray-950,
+:not(html.dark) .theme-dark .text-gray-900,
+:not(html.dark) .theme-dark .text-gray-800,
+:not(html.dark) .theme-dark .text-zinc-950,
+:not(html.dark) .theme-dark .text-zinc-900,
+:not(html.dark) .theme-dark .text-zinc-800,
+:not(html.dark) .theme-dark .text-stone-950,
+:not(html.dark) .theme-dark .text-stone-900,
+:not(html.dark) .theme-dark .text-stone-800,
+:not(html.dark) .theme-dark .text-neutral-950,
+:not(html.dark) .theme-dark .text-neutral-900,
+:not(html.dark) .theme-dark .text-neutral-800 {
+  color: #F1F5F9 !important;
+}
+
+:not(html.dark) .theme-dark .text-slate-700,
+:not(html.dark) .theme-dark .text-slate-600,
+:not(html.dark) .theme-dark .text-slate-500,
+:not(html.dark) .theme-dark .text-gray-700,
+:not(html.dark) .theme-dark .text-gray-600,
+:not(html.dark) .theme-dark .text-gray-500,
+:not(html.dark) .theme-dark .text-zinc-700,
+:not(html.dark) .theme-dark .text-zinc-600,
+:not(html.dark) .theme-dark .text-zinc-500,
+:not(html.dark) .theme-dark .text-stone-700,
+:not(html.dark) .theme-dark .text-stone-600,
+:not(html.dark) .theme-dark .text-stone-500,
+:not(html.dark) .theme-dark .text-neutral-700,
+:not(html.dark) .theme-dark .text-neutral-600,
+:not(html.dark) .theme-dark .text-neutral-500 {
+  color: #CBD5E1 !important;
+}
+
+:not(html.dark) .theme-dark .text-slate-400,
+:not(html.dark) .theme-dark .text-gray-400,
+:not(html.dark) .theme-dark .text-zinc-400,
+:not(html.dark) .theme-dark .text-stone-400,
+:not(html.dark) .theme-dark .text-neutral-400 {
+  color: #94A3B8 !important;
+}
+
+:not(html.dark) .theme-dark .text-slate-300,
+:not(html.dark) .theme-dark .text-gray-300,
+:not(html.dark) .theme-dark .text-zinc-300,
+:not(html.dark) .theme-dark .text-stone-300,
+:not(html.dark) .theme-dark .text-neutral-300 {
+  color: #CBD5E1 !important;
+}
+
+:not(html.dark) .theme-dark .border-slate-100,
+:not(html.dark) .theme-dark .border-gray-100,
+:not(html.dark) .theme-dark .border-zinc-100,
+:not(html.dark) .theme-dark .border-stone-100,
+:not(html.dark) .theme-dark .border-neutral-100 {
+  border-color: #1E293B !important;
+}
+
+:not(html.dark) .theme-dark .border-slate-200,
+:not(html.dark) .theme-dark .border-gray-200,
+:not(html.dark) .theme-dark .border-zinc-200,
+:not(html.dark) .theme-dark .border-stone-200,
+:not(html.dark) .theme-dark .border-neutral-200 {
+  border-color: #26324D !important;
+}
+
+:not(html.dark) .theme-dark .border-slate-300,
+:not(html.dark) .theme-dark .border-gray-300,
+:not(html.dark) .theme-dark .border-zinc-300,
+:not(html.dark) .theme-dark .border-stone-300,
+:not(html.dark) .theme-dark .border-neutral-300 {
+  border-color: #314266 !important;
+}
+
+/* 2b. Manually activate tailwind dark: utility classes inside .theme-dark even when global html does not have .dark */
+:not(html.dark) .theme-dark .dark\:bg-slate-900,
+:not(html.dark) .theme-dark .dark\:bg-slate-950,
+:not(html.dark) .theme-dark .dark\:bg-\[\#0B0F19\],
+:not(html.dark) .theme-dark .dark\:bg-\[\#090D16\],
+:not(html.dark) .theme-dark .dark\:bg-\[\#111827\],
+:not(html.dark) .theme-dark .dark\:bg-\[\#121824\] {
+  background-color: #0b0f19 !important;
+}
+
+:not(html.dark) .theme-dark .dark\:bg-slate-800,
+:not(html.dark) .theme-dark .dark\:bg-slate-800\/80 {
+  background-color: #1e293b !important;
+}
+
+:not(html.dark) .theme-dark .dark\:text-slate-100,
+:not(html.dark) .theme-dark .dark\:text-white {
+  color: #ffffff !important;
+}
+
+:not(html.dark) .theme-dark .dark\:text-slate-200 {
+  color: #e2e8f0 !important;
+}
+
+:not(html.dark) .theme-dark .dark\:text-slate-300 {
+  color: #cbd5e1 !important;
+}
+
+:not(html.dark) .theme-dark .dark\:text-slate-400 {
+  color: #94a3b8 !important;
+}
+
+:not(html.dark) .theme-dark .dark\:border-slate-800,
+:not(html.dark) .theme-dark .dark\:border-slate-800\/80,
+:not(html.dark) .theme-dark .dark\:border-slate-700 {
+  border-color: #334155 !important;
+}
+
+

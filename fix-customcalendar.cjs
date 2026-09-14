@@ -1,0 +1,5 @@
+"use strict";
+const fs = require("fs");
+let code = fs.readFileSync("src/components/CustomCalendar.tsx", "utf8");
+code = code.replaceAll('{canViewEventHistory && (\n              <button\n                onClick={() => setShowHistory(true)}\n                className="flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg font-medium transition-all duration-300 hover:bg-slate-200 active:scale-95 whitespace-nowrap"\n                title="L\u1ECBch s\u1EED s\u1EF1 ki\u1EC7n"\n              >\n                <CalendarIcon size={18} /> L\u1ECBch s\u1EED\n              </button>\n            )}', '<button\n                onClick={() => setShowHistory(true)}\n                className="flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg font-medium transition-all duration-300 hover:bg-slate-200 active:scale-95 whitespace-nowrap"\n                title="L\u1ECBch s\u1EED s\u1EF1 ki\u1EC7n"\n              >\n                <CalendarIcon size={18} /> L\u1ECBch s\u1EED\n              </button>');
+fs.writeFileSync("src/components/CustomCalendar.tsx", code);
