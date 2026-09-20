@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { auth } from "../../middleware/auth";
+import { auth, requireRoles } from "../../middleware/auth";
 import db from "../../db/database";
 import { logAction } from "../../utils/logger";
 import { mapRoleToDb } from "../../utils/role";
@@ -7,7 +7,7 @@ import { mapRoleToDb } from "../../utils/role";
 const router = Router();
 
 // Lấy danh sách phân quyền (cho Admin)
-router.get("/permissions", auth, (req: any, res: any) => {
+router.get("/permissions", requireRoles("admin", "director"), (req: any, res: any) => {
   try {
     const perms = db.prepare(`SELECT * FROM role_permissions`).all();
     // Transform to object mapping role -> permissions
@@ -35,7 +35,7 @@ router.get("/permissions", auth, (req: any, res: any) => {
 });
 
 // Cập nhật phân quyền
-router.put("/permissions", auth, (req: any, res: any) => {
+router.put("/permissions", requireRoles("admin", "director"), (req: any, res: any) => {
   try {
     // Chỉ admin và director mới có quyền thực sự sửa
     const userRole = mapRoleToDb(req.session?.user?.role);

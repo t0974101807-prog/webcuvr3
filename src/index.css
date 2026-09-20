@@ -54,8 +54,8 @@
     --color-primary-light: #163D4E; /* Lighter refined dark teal-blue */
     --color-accent: #E5C047; /* Elegant warm classic brass gold for dark mode */
     --color-accent-hover: #F2D263; /* Lighter warm gold */
-    --color-text-dark: #F8FAFC;
-    --color-text-light: #0A0E17;
+    --color-text-dark: #F8FAFC !important;
+    --color-text-light: #0A0E17 !important;
   }
 
   html.dark body {
@@ -316,6 +316,15 @@
   html.dark nav.bg-white\/95 {
     background-color: rgba(18, 24, 36, 0.95) !important;
     border-color: #1E293B !important;
+  }
+
+  /* Dashboard header tokens must stay light on the dark shell. */
+  html.dark .text-\[var\(--color-text-dark\)\] {
+    color: #F8FAFC !important;
+  }
+
+  html.dark .text-gray-600 {
+    color: #CBD5E1 !important;
   }
 
   html.dark .bg-\[\#0a2d37\]\/10,
@@ -996,6 +1005,79 @@ html.dark .theme-light .border-slate-700 {
 :not(html.dark) .theme-dark .dark\:border-slate-800\/80,
 :not(html.dark) .theme-dark .dark\:border-slate-700 {
   border-color: #334155 !important;
+}
+
+/* Nested light panels must remain readable inside the dark dashboard shell. */
+.theme-light {
+  color: #1E293B;
+  background-color: #F8FAFC;
+}
+
+.theme-light .bg-white {
+  background-color: #FFFFFF !important;
+  border-color: #CBD5E1 !important;
+}
+
+.theme-light .bg-slate-50,
+.theme-light .bg-slate-100,
+.theme-light .bg-gray-50,
+.theme-light .bg-gray-100 {
+  background-color: #F1F5F9 !important;
+  border-color: #CBD5E1 !important;
+}
+
+.theme-light .text-slate-100,
+.theme-light .text-slate-200,
+.theme-light .text-slate-300,
+.theme-light .text-gray-100,
+.theme-light .text-gray-200,
+.theme-light .text-gray-300 {
+  color: #334155 !important;
+}
+
+.theme-light .text-slate-400,
+.theme-light .text-gray-400 {
+  color: #64748B !important;
+}
+
+.theme-light .text-slate-500,
+.theme-light .text-gray-500 {
+  color: #475569 !important;
+}
+
+.theme-light .text-slate-600,
+.theme-light .text-slate-700,
+.theme-light .text-gray-600,
+.theme-light .text-gray-700 {
+  color: #1E293B !important;
+}
+
+/* Keep dashboard surfaces readable when a component theme is nested in the shell. */
+.theme-light :is(p, span, label, td, th, li) {
+  color: #334155;
+}
+
+.theme-light :is(h1, h2, h3, h4, h5, h6) {
+  color: #0F172A;
+}
+
+.theme-dark {
+  color: #E2E8F0;
+  background-color: #0F172A;
+}
+
+.theme-dark :is(p, span, label, td, th, li) {
+  color: #CBD5E1;
+}
+
+.theme-dark :is(h1, h2, h3, h4, h5, h6) {
+  color: #F8FAFC;
+}
+
+.theme-dark :is(button, a):focus-visible,
+.theme-light :is(button, a):focus-visible {
+  outline: 3px solid #F4C95D;
+  outline-offset: 2px;
 }
 
 

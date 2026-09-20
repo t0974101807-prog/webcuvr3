@@ -2,6 +2,8 @@ import { Router, Request, Response, NextFunction } from "express";
 import crypto from "crypto";
 import db from "../../db/database";
 import { TrashService } from "../../services/trash.service";
+import { SharedDirectoryService } from "../../application/services/sharedDirectory.service";
+import { auth, requireRoles } from "../../middleware/auth";
 
 // Ensure the api_audit_logs and gateway config table exists
 try {
@@ -72,11 +74,11 @@ const apiGatewayMiddleware = (req: Request, res: Response, next: NextFunction) =
   res.setHeader("X-Request-ID", requestId);
   res.setHeader("X-Correlation-ID", traceId);
 
-  // Parse custom testing headers
+  const authenticatedUser = (req as any).user || (req as any).session?.user;
   const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
   const userAgent = req.headers["user-agent"] || "Unknown Client";
-  const testUser = (req.headers["x-test-user"] as string) || "Chuyên viên Khách hàng";
-  const testRole = (req.headers["x-test-role"] as string) || "LAWYER"; // ADMIN, LAWYER, CLIENT, GUEST
+  const gatewayUser = authenticatedUser?.name || authenticatedUser?.username || "Authenticated User";
+  const gatewayRole = String(authenticatedUser?.role || "").toUpperCase();
 
   // Rate Limiting simulation
   const isRateLimitEnabled = getGatewayConfig("rate_limiting") === "enabled";
@@ -85,7 +87,7 @@ const apiGatewayMiddleware = (req: Request, res: Response, next: NextFunction) =
   if (isRateLimitEnabled) {
     const now = Date.now();
     const windowMs = 60 * 1000; // 1 minute
-    const limit = testRole === "ADMIN" ? 200 : 60; // Admin gets more requests/min
+    const limit = gatewayRole === "ADMIN" ? 200 : 60; // Admin gets more requests/min
     
     const clientState = ipRateLimitMap.get(clientIp as string) || { count: 0, windowStart: now };
     if (now - clientState.windowStart > windowMs) {
@@ -97,7 +99,7 @@ const apiGatewayMiddleware = (req: Request, res: Response, next: NextFunction) =
     ipRateLimitMap.set(clientIp as string, clientState);
 
     if (clientState.count > limit || customLimitTrigger) {
-      logGatewayAudit(testUser, req.originalUrl, "REST", 429, requestId, traceId, clientIp as string, userAgent, "Rate Limited: Too Many Requests");
+      logGatewayAudit(gatewayUser, req.originalUrl, "REST", 429, requestId, traceId, clientIp as string, userAgent, "Rate Limited: Too Many Requests");
       return res.status(429).json({
         success: false,
         data: null,
@@ -114,16 +116,16 @@ const apiGatewayMiddleware = (req: Request, res: Response, next: NextFunction) =
   // RBAC Authorization checking
   const isRbacEnabled = getGatewayConfig("rbac_checking") === "enabled";
   // Suppose certain endpoints like /api/v1/cases/delete or methods like DELETE require ADMIN role
-  if (isRbacEnabled && req.originalUrl.includes("/api/v1/cases") && (req.method === "DELETE" || req.headers["x-test-permission"] === "denied")) {
-    if (testRole !== "ADMIN") {
-      logGatewayAudit(testUser, req.originalUrl, "REST", 403, requestId, traceId, clientIp as string, userAgent, "Forbidden: Missing CASE.DELETE scope");
+  if (isRbacEnabled && req.originalUrl.includes("/api/v1/cases") && req.method === "DELETE") {
+    if (gatewayRole !== "ADMIN") {
+      logGatewayAudit(gatewayUser, req.originalUrl, "REST", 403, requestId, traceId, clientIp as string, userAgent, "Forbidden: Missing CASE.DELETE scope");
       return res.status(403).json({
         success: false,
         data: null,
         message: "Quyền truy cập bị từ chối! Tài khoản không có phân quyền thực hiện hành động này (Yêu cầu vai trò ADMIN).",
         error: {
           code: "ACCESS_DENIED",
-          details: { role: testRole, requiredPermission: "CASE.DELETE" }
+          details: { role: gatewayRole, requiredPermission: "CASE.DELETE" }
         },
         meta: { requestId, traceId, timestamp: new Date().toISOString() }
       });
@@ -136,7 +138,7 @@ const apiGatewayMiddleware = (req: Request, res: Response, next: NextFunction) =
     try {
       const cached = db.prepare("SELECT response_json FROM api_idempotency_keys WHERE key = ?").get(idempotencyKey) as { response_json: string } | undefined;
       if (cached) {
-        logGatewayAudit(testUser, req.originalUrl, "REST", 200, requestId, traceId, clientIp as string, userAgent, "Idempotency Triggered (Duplicate Avoided)");
+        logGatewayAudit(gatewayUser, req.originalUrl, "REST", 200, requestId, traceId, clientIp as string, userAgent, "Idempotency Triggered (Duplicate Avoided)");
         const parsedResponse = JSON.parse(cached.response_json);
         // Inject idempotency trace headers
         res.setHeader("X-Cache-Idempotency", "HIT");
@@ -153,8 +155,8 @@ const apiGatewayMiddleware = (req: Request, res: Response, next: NextFunction) =
     traceId,
     clientIp,
     userAgent,
-    user: testUser,
-    role: testRole
+    user: gatewayUser,
+    role: gatewayRole
   };
 
   next();
@@ -207,7 +209,7 @@ const saveIdempotencyResponse = (key: string, response: any) => {
 };
 
 // Gateway Management System API
-router.get("/api/v1/gateway/dashboard", (req, res) => {
+router.get("/api/v1/gateway/dashboard", requireRoles("admin", "director", "controller"), (req, res) => {
   try {
     const logs = db.prepare("SELECT * FROM api_audit_logs ORDER BY timestamp DESC LIMIT 60").all() as any[];
     const configs = db.prepare("SELECT * FROM api_gateway_config").all() as any[];
@@ -252,7 +254,7 @@ router.get("/api/v1/gateway/dashboard", (req, res) => {
   }
 });
 
-router.post("/api/v1/gateway/toggle-rule", (req, res) => {
+router.post("/api/v1/gateway/toggle-rule", requireRoles("admin", "director"), (req, res) => {
   try {
     const { rule, status } = req.body;
     if (!rule || typeof status !== "boolean") {
@@ -272,7 +274,7 @@ router.post("/api/v1/gateway/toggle-rule", (req, res) => {
 });
 
 /* Apply Gateway Middleware for REST API V1 */
-router.use("/api/v1", apiGatewayMiddleware);
+router.use("/api/v1", requireRoles("admin", "director", "controller"), apiGatewayMiddleware);
 
 /* ========================================================================= */
 /* 1. REST API V1 ENDPOINTS                                                  */
@@ -551,7 +553,7 @@ router.get("/api/v1/documents", (req, res) => {
 // USERS DOMAIN
 router.get("/api/v1/users", (req, res) => {
   try {
-    const users = db.prepare("SELECT id, name, username, role FROM users LIMIT 50").all();
+    const users = SharedDirectoryService.listGatewayUsers();
     res.json({
       success: true,
       data: users,

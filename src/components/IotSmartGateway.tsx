@@ -29,16 +29,8 @@ export const IotSmartGateway: React.FC<{ language: "vi" | "en" }> = ({ language 
   const [isFaceEnrollOpen, setIsFaceEnrollOpen] = useState(false);
   const [faceEnrollForm, setFaceEnrollForm] = useState({ name: "", role: "", avatarUrl: "" });
   const [users, setUsers] = useState<any[]>([]);
-  const [enrolledFaces, setEnrolledFaces] = useState([
-    { id: 1, name: "Quản trị viên", role: "", confidence: 99.1, avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80", status: "Active" },
-    { id: 2, name: "Luật sư Trần Văn Bảo", role: "Luật sư Cấp cao", confidence: 98.4, avatar: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=150&q=80", status: "Active" },
-    { id: 3, name: "Chuyên viên Nguyễn Hải Nguyệt", role: "Chuyên viên Pháp lý", confidence: 96.5, avatar: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=150&q=80", status: "Active" }
-  ]);
-  const [sdkLogs, setSdkLogs] = useState([
-    { id: "L-01", time: "10:25 AM", name: "Quản trị viên", location: "Cổng Chính (Lễ tân Tầng 1)", match: 99.1, liveness: 94.2, status: "PASS" },
-    { id: "L-02", time: "10:12 AM", name: "Luật sư Trần Văn Bảo", location: "Cổng Chính (Lễ tân Tầng 1)", match: 98.4, liveness: 92.5, status: "PASS" },
-    { id: "L-03", time: "09:45 AM", name: "Chuyên viên Nguyễn Hải Nguyệt", location: "Cổng Chính (Lễ tân Tầng 1)", match: 96.5, liveness: 91.8, status: "PASS" }
-  ]);
+  const [enrolledFaces, setEnrolledFaces] = useState<any[]>([]);
+  const [sdkLogs, setSdkLogs] = useState<any[]>([]);
 
   const [devices, setDevices] = useState<IotDevice[]>([]);
   const [weather, setWeather] = useState<TelemetryData | null>(null);
@@ -95,89 +87,9 @@ export const IotSmartGateway: React.FC<{ language: "vi" | "en" }> = ({ language 
   }, [attendanceEvents]);
 
   // Custom UI-driven states
-  const [systemAlerts, setSystemAlerts] = useState<AlarmEvent[]>([
-    {
-      id: "AL-01",
-      time: "10:28 AM",
-      title: "Door Forced Open (Cửa sau tòa nhà)",
-      location: "Cổng Phụ Tầng 1",
-      severity: "critical",
-      status: "active",
-      details: "Phát hiện lực tác động mạnh liên tục mở cửa từ bên ngoài."
-    },
-    {
-      id: "AL-02",
-      time: "10:27 AM",
-      title: "Nhiệt độ phòng Server tăng cao (38.5°C)",
-      location: "Phòng Server",
-      severity: "critical",
-      status: "active",
-      details: "Nhiệt độ phòng máy chủ vượt ngưỡng khuyến nghị 24°C."
-    },
-    {
-      id: "AL-03",
-      time: "10:24 AM",
-      title: "Camera CAM-02 Mất kết nối",
-      location: "Hành lang Tầng 2",
-      severity: "warning",
-      status: "active",
-      details: "Không nhận tín hiệu hình ảnh RTSP trong 3 phút qua."
-    },
-    {
-      id: "AL-04",
-      time: "10:20 AM",
-      title: "Khói nhẹ phát hiện ở khu bếp",
-      location: "Khu vực Pantry",
-      severity: "warning",
-      status: "active",
-      details: "Cảm biến quang học phát hiện lượng khói mật độ 12ppm."
-    },
-    {
-      id: "AL-05",
-      time: "10:18 AM",
-      title: "Pin thiết bị RFID-01 yếu (15%)",
-      location: "Cổng Phụ Tầng 2",
-      severity: "warning",
-      status: "active",
-      details: "Điện áp pin dự phòng hạ xuống còn 2.8V."
-    }
-  ]);
+  const [systemAlerts, setSystemAlerts] = useState<AlarmEvent[]>([]);
 
-  const [automationRules, setAutomationRules] = useState<AutomationRule[]>([
-    {
-      id: "R-01",
-      name: "Tự động tắt điều hòa sau 18h00 khi vắng người",
-      triggerDevice: "DEV-ESP32-CAM-01",
-      triggerParam: "occupancy",
-      operator: "=",
-      triggerValue: "0",
-      actionDevice: "DEV-AC-LOBBY",
-      actionCommand: "POWER_OFF",
-      active: true
-    },
-    {
-      id: "R-02",
-      name: "Bật quạt thông gió nếu nhiệt độ phòng máy chủ > 35°C",
-      triggerDevice: "DEV-SERVER-TEMP",
-      triggerParam: "temperature",
-      operator: ">",
-      triggerValue: "35",
-      actionDevice: "DEV-SERVER-FAN",
-      actionCommand: "FAN_ON_100%",
-      active: true
-    },
-    {
-      id: "R-03",
-      name: "Cảnh báo mở cửa phòng Server ngoài giờ hành chính",
-      triggerDevice: "DEV-RFID-01",
-      triggerParam: "access",
-      operator: "changes",
-      triggerValue: "unauthorized",
-      actionDevice: "SIREN_ALERT",
-      actionCommand: "PLAY_ALARM",
-      active: false
-    }
-  ]);
+  const [automationRules, setAutomationRules] = useState<AutomationRule[]>([]);
 
   // Add/Edit device form state
   const [showAddModal, setShowAddModal] = useState(false);
@@ -657,25 +569,20 @@ export const IotSmartGateway: React.FC<{ language: "vi" | "en" }> = ({ language 
     }
   };
 
-  // Recharts Chart Mock Data representing past 24 hours
-  const environmentTrendData = [
-    { name: "10:00", temperature: 28.5, humidity: 65, AQI: 42, electricity: 78 },
-    { name: "14:00", temperature: 31.2, humidity: 60, AQI: 48, electricity: 85 },
-    { name: "18:00", temperature: 29.8, humidity: 62, AQI: 45, electricity: 80 },
-    { name: "22:00", temperature: 27.5, humidity: 68, AQI: 39, electricity: 65 },
-    { name: "02:00", temperature: 25.1, humidity: 74, AQI: 35, electricity: 52 },
-    { name: "06:00", temperature: 24.3, humidity: 78, AQI: 32, electricity: 55 },
-    { name: "10:00", temperature: weather?.temperature || 29.2, humidity: weather?.humidity || 65, AQI: weather?.air_quality || 38, electricity: 85 }
-  ];
+  const environmentTrendData = weather ? [{
+    name: "Mới nhất",
+    temperature: weather.temperature,
+    humidity: weather.humidity,
+    AQI: weather.air_quality,
+    electricity: null
+  }] : [];
 
   // Donut chart distribution
-  const deviceTypePieData = [
-    { name: "Camera AI", value: 32, color: "#6366f1" },
-    { name: "ESP32/Arduino", value: 45, color: "#10b981" },
-    { name: "Cảm biến môi trường", value: 18, color: "#f59e0b" },
-    { name: "RFID/Access Control", value: 16, color: "#ec4899" },
-    { name: "Khác", value: 15, color: "#64748b" }
-  ];
+  const deviceTypePieData = Object.entries(devices.reduce<Record<string, number>>((counts, device) => {
+    const type = device.device_type || "other";
+    counts[type] = (counts[type] || 0) + 1;
+    return counts;
+  }, {})).map(([name, value], index) => ({ name, value, color: ["#6366f1", "#10b981", "#f59e0b", "#ec4899", "#64748b"][index % 5] }));
 
   const totalDevicesPie = deviceTypePieData.reduce((sum, item) => sum + item.value, 0);
 
@@ -768,12 +675,12 @@ export const IotSmartGateway: React.FC<{ language: "vi" | "en" }> = ({ language 
           <div className="space-y-6">
             {/* Six Key Metric Cards */}
             <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
-              <MetricTile title="Thiết bị Online" value={devices.length + 123} subtitle="↑ 12% so với hôm qua" trendUp={true} colorClass="bg-indigo-500/10 text-indigo-400 border-indigo-500/20" icon={<Activity />} />
-              <MetricTile title="Thiết bị Offline" value={3} subtitle="↓ 25% so với hôm qua" trendUp={false} colorClass="bg-rose-500/10 text-rose-400 border-rose-500/20" icon={<Power />} />
+              <MetricTile title="Thiết bị Online" value={devices.filter(device => String(device.status).toLowerCase() === "online").length} subtitle="Theo trạng thái thiết bị" trendUp={true} colorClass="bg-indigo-500/10 text-indigo-400 border-indigo-500/20" icon={<Activity />} />
+              <MetricTile title="Thiết bị Offline" value={devices.filter(device => String(device.status).toLowerCase() !== "online").length} subtitle="Theo trạng thái thiết bị" trendUp={false} colorClass="bg-rose-500/10 text-rose-400 border-rose-500/20" icon={<Power />} />
               <MetricTile title="Cảnh báo active" value={systemAlerts.filter(a => a.status === "active").length} subtitle="Xem chi tiết" isWarning={true} colorClass="bg-amber-500/10 text-amber-400 border-amber-500/20" icon={<AlertOctagon />} />
               <MetricTile title="Routines Auto" value={18} subtitle="Đang hoạt động" trendUp={true} colorClass="bg-teal-500/10 text-teal-400 border-teal-500/20" icon={<Zap />} />
-              <MetricTile title="Người trong văn phòng" value={32} subtitle="Hiện tại" trendUp={true} colorClass="bg-sky-500/10 text-sky-400 border-sky-500/20" icon={<Users />} />
-              <MetricTile title="Điện năng tiêu thụ" value="85%" subtitle="Hiệu suất tối ưu" trendUp={false} colorClass="bg-fuchsia-500/10 text-fuchsia-400 border-fuchsia-500/20" icon={<Cpu />} />
+              <MetricTile title="Người trong văn phòng" value={attendanceEvents.length} subtitle="Sự kiện chấm công đã ghi nhận" trendUp={true} colorClass="bg-sky-500/10 text-sky-400 border-sky-500/20" icon={<Users />} />
+              <MetricTile title="Điện năng tiêu thụ" value="--" subtitle="Chưa có telemetry điện năng" trendUp={false} colorClass="bg-fuchsia-500/10 text-fuchsia-400 border-fuchsia-500/20" icon={<Cpu />} />
             </div>
 
             {/* Layout Grid: Charts & Map */}

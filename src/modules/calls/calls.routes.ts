@@ -83,8 +83,6 @@ const emitCallUpdate = (req: any, eventName: string, data: any) => {
 
 // In-memory active calls tracker (Current Concurrent Calls)
 export const activeCalls = new Map<string, any>();
-let peakConcurrentCallsSeed = 14; // Default seed value for initial stats
-
 // Sweep-line algorithm to find peak concurrent calls from real data
 function calculatePeakConcurrent(calls: any[]): number {
   if (calls.length === 0) return 0;
@@ -373,8 +371,13 @@ router.get("/stats", auth, (req: any, res: any) => {
 });
 
 // GET /api/calls/realtime - Active and concurrent call state
-router.get("/realtime", (req: any, res: any) => {
+router.get("/realtime", auth, (req: any, res: any) => {
   try {
+    const currentUser = req.user || req.session?.user;
+    if (!currentUser) {
+      return res.status(401).json({ error: "Yêu cầu đăng nhập." });
+    }
+
     // Clean up expired active calls (older than 30 mins)
     const now = Date.now();
     for (const [id, call] of activeCalls.entries()) {
@@ -385,10 +388,20 @@ router.get("/realtime", (req: any, res: any) => {
       }
     }
 
-    const data = Array.from(activeCalls.values());
+    const mappedRole = mapRoleToDb(currentUser.role);
+    const canViewAll = isManagementRole(mappedRole);
+    const userName = currentUser.name || currentUser.username || "";
+    const userBranch = currentUser.branch || "";
+    const data = Array.from(activeCalls.values()).filter((call: any) => {
+      if (canViewAll && (mappedRole !== "manager" && mappedRole !== "head_of_department" || !userBranch)) return true;
+      if (canViewAll && (mappedRole === "manager" || mappedRole === "head_of_department")) {
+        return !userBranch || call.branch === userBranch || call.office_id === userBranch;
+      }
+      return call.staffName === userName || call.employee_id === userName;
+    });
     res.json({
       currentConcurrent: data.length,
-      peakConcurrent: Math.max(peakConcurrentCallsSeed, data.length),
+      peakConcurrent: calculatePeakConcurrent(data),
       activeCalls: data
     });
   } catch (err: any) {

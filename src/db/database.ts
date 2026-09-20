@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import fs from "fs";
+import bcrypt from "bcrypt";
 
 // In Cloud Run or production environments without a writable volume, we must write to /tmp
 const dbPath = process.env.NODE_ENV === "production" ? "/tmp/lawfirm.db" : "lawfirm.db";
@@ -94,6 +95,7 @@ db.exec(`
   );
   
   CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT, phone TEXT, content TEXT, created_at TEXT, is_read INTEGER DEFAULT 0, reply_notes TEXT);
+  CREATE TABLE IF NOT EXISTS portal_activities(id TEXT PRIMARY KEY, type TEXT NOT NULL, client_id TEXT, client_name TEXT, document_title TEXT, response_time_minutes INTEGER, timestamp TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS visitor_stats(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT UNIQUE, visitors INTEGER DEFAULT 0, page_views INTEGER DEFAULT 0, chats INTEGER DEFAULT 0);
   CREATE TABLE IF NOT EXISTS record_types(id INTEGER PRIMARY KEY AUTOINCREMENT, type_code TEXT, type_name TEXT, description TEXT, display_color TEXT, active INTEGER DEFAULT 1);
   CREATE TABLE IF NOT EXISTS erp_records(id TEXT PRIMARY KEY, data TEXT);
@@ -150,6 +152,18 @@ db.exec(`
     viewEventHistory INTEGER DEFAULT 0
   );
 
+  CREATE TABLE IF NOT EXISTS firestore_sync_outbox(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_name TEXT NOT NULL,
+    record_id TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    payload TEXT,
+    created_at TEXT NOT NULL,
+    attempts INTEGER DEFAULT 0,
+    last_error TEXT,
+    UNIQUE(table_name, record_id)
+  );
+
   
   CREATE TABLE IF NOT EXISTS record_messages(id INTEGER PRIMARY KEY AUTOINCREMENT, record_id TEXT, sender_name TEXT, sender_role TEXT, content TEXT, file_url TEXT, file_name TEXT, created_at TEXT, is_read INTEGER DEFAULT 0);
   CREATE TABLE IF NOT EXISTS live_messages(
@@ -173,6 +187,31 @@ db.exec(`
     signer TEXT,
     content TEXT,
     status TEXT,
+    created_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS signed_documents(
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    client_name TEXT,
+    template_id TEXT,
+    document_title TEXT,
+    document_code TEXT,
+    signed_url TEXT,
+    signed_at TEXT,
+    ink_color TEXT,
+    method TEXT,
+    created_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS appointments(
+    id TEXT PRIMARY KEY,
+    client_name TEXT NOT NULL,
+    phone TEXT,
+    category TEXT,
+    date_time TEXT,
+    assigned_staff TEXT,
+    type TEXT,
+    notes TEXT,
+    status TEXT DEFAULT 'pending',
     created_at TEXT
   );
 
@@ -815,6 +854,19 @@ try {
   // Column might already exist
 }
 
+// Add login protection fields if they don't exist
+try {
+  db.prepare("ALTER TABLE users ADD COLUMN login_failures INTEGER DEFAULT 0").run();
+} catch (e) {
+  // Column might already exist
+}
+
+try {
+  db.prepare("ALTER TABLE users ADD COLUMN locked_until TEXT").run();
+} catch (e) {
+  // Column might already exist
+}
+
 // Add practice_areas column if it doesn't exist
 try {
   db.prepare("ALTER TABLE users ADD COLUMN practice_areas TEXT").run();
@@ -828,6 +880,22 @@ try {
 } catch (e) {
   // Column might already exist
 }
+
+// Database-level guard: the canonical admin account cannot be deleted or demoted.
+db.exec(`
+  CREATE TRIGGER IF NOT EXISTS protect_system_admin_delete
+  BEFORE DELETE ON users
+  WHEN OLD.username = 'admin' OR OLD.role = 'admin'
+  BEGIN
+    SELECT RAISE(ABORT, 'SYSTEM_ADMIN_PROTECTED');
+  END;
+  CREATE TRIGGER IF NOT EXISTS protect_system_admin_identity
+  BEFORE UPDATE OF username, role ON users
+  WHEN OLD.username = 'admin' AND (NEW.username <> 'admin' OR NEW.role <> 'admin')
+  BEGIN
+    SELECT RAISE(ABORT, 'SYSTEM_ADMIN_IDENTITY_PROTECTED');
+  END;
+`);
 
 // Migrations for recycle_bin table
 try {
@@ -1492,12 +1560,17 @@ const seedData = () => {
     insertOffice.run("Chi nhánh Hải Phòng", "Hải Phòng", "north", "Số 30 Đường Trần Nguyên Hãn, Phường Lê Chân, TP. Hải Phòng", "1900 3330", "info@anhduonglaw.vn", "https://maps.google.com/?q=30+Tran+Nguyen+Han+Le+Chan+Hai+Phong", 0, 20.8449, 106.6881);
   }
 
-  const adminExists = db.prepare("SELECT COUNT(*) as count FROM users WHERE username = 'admin'").get() as { count: number };
-  if (adminExists.count === 0) {
-    db.prepare("INSERT INTO users (username, password, name, role, staff_code, title, branch, salary, practice_areas) VALUES ('admin', 'Abcd@12345', 'Quản trị viên', 'admin', 'QTV001', '', 'Trụ sở chính', '0', 'ban_giam_doc')").run();
+  const adminPassword = process.env.ADMIN_INITIAL_PASSWORD || "Abcd@12345";
+  const adminPasswordHash = bcrypt.hashSync(adminPassword, 12);
+  const adminExists = db.prepare("SELECT id, password FROM users WHERE username = 'admin' OR role = 'admin' ORDER BY CASE WHEN username = 'admin' THEN 0 ELSE 1 END, id LIMIT 1").get() as { id?: number; password?: string } | undefined;
+  if (!adminExists) {
+    db.prepare("INSERT INTO users (username, password, name, role, staff_code, title, branch, salary, practice_areas, account_type, known_devices, login_failures, locked_until) VALUES (?, ?, 'Quản trị viên', 'admin', 'QTV001', '', 'Trụ sở chính', '0', 'ban_giam_doc', 'INTERNAL', '[]', 0, NULL)").run('admin', adminPasswordHash);
   } else {
-    // Luôn đảm bảo tài khoản quản trị hệ thống có tên Quản trị viên và không có chức danh, không có lương và ở Trụ sở chính, đồng thời đặt lại mật khẩu để khôi phục đăng nhập
-    db.prepare("UPDATE users SET name = 'Quản trị viên', password = 'Abcd@12345', title = '', practice_areas = 'ban_giam_doc', salary = '0', branch = 'Trụ sở chính' WHERE username = 'admin'").run();
+    // Keep the protected account canonical without resetting its password on every restart.
+    const passwordUpdate = adminExists.password && /^\$2[aby]\$/.test(adminExists.password)
+      ? adminExists.password
+      : adminPasswordHash;
+    db.prepare("UPDATE users SET username = 'admin', name = 'Quản trị viên', role = 'admin', password = ?, title = '', practice_areas = 'ban_giam_doc', salary = '0', branch = 'Trụ sở chính', account_type = 'INTERNAL' WHERE id = ?").run(passwordUpdate, adminExists.id);
   }
 
   // Khôi phục đồng bộ lập tức cho dữ liệu hiện có trong CSDL thực tế

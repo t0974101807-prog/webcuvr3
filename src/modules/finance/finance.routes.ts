@@ -3,6 +3,7 @@ import { auth } from "../../middleware/auth";
 import db from "../../db/database";
 import { mapRoleToDb } from "../../utils/role";
 import { encodeCursor, decodeCursor } from "../../utils/cursor";
+import { SystemDataAccess } from "../../system/data-access/SystemDataAccess";
 
 const router = Router();
 
@@ -155,15 +156,14 @@ router.get("/assets-debts", auth, checkFinancePermission, (req: any, res: any) =
     const debts = db.prepare("SELECT * FROM company_debts ORDER BY id DESC").all() as any[];
 
     // Include unpaid case debts from erp_records
-    const erpRecords = db.prepare("SELECT * FROM erp_records").all() as any[];
+    const erpRecords = SystemDataAccess.getAllRecords();
     const erpDebts: any[] = [];
-    for (const r of erpRecords) {
+    for (const d of erpRecords) {
       try {
-        const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
         const remFee = Number(d?.remainingFee !== undefined ? d.remainingFee : (d?.debt || 0));
         if (remFee > 0) {
           const clientName = d.clientName || d.client || "Khách hàng";
-          const caseId = d.id || r.id;
+          const caseId = d.id;
           // Check if already in debts list to prevent duplication
           const exists = debts.some((item: any) => String(item.description || '').includes(caseId));
           if (!exists) {
@@ -374,11 +374,10 @@ router.get("/performance", auth, checkFinancePermission, (req: any, res: any) =>
     const thuTrans = db.prepare("SELECT SUM(amount) as s FROM finance_transactions WHERE type='thu' AND status='completed'").get() as any;
     let totalThu = thuTrans?.s || 0;
 
-    const erpRecords = db.prepare("SELECT data FROM erp_records").all() as any[];
+    const erpRecords = SystemDataAccess.getAllRecords();
     let erpTotalRevenue = 0;
-    for (const r of erpRecords) {
+    for (const d of erpRecords) {
       try {
-        const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
         if (d && d.feeAmount) {
           erpTotalRevenue += Number(String(d.feeAmount).replace(/,/g, "")) || 0;
         } else if (d && d.revenue) {
@@ -437,16 +436,15 @@ router.get("/staff-commissions", auth, checkFinancePermission, (req: any, res: a
     `).all() as any[];
 
     // Get all erp records
-    const records = db.prepare("SELECT data FROM erp_records").all() as any[];
+    const records = SystemDataAccess.getAllRecords();
     
     const results = staff.map(s => {
       let earnedCommission = 0;
       let earnedCompletionReward = 0;
       const associatedCases: any[] = [];
 
-      records.forEach(r => {
+      records.forEach((data: any) => {
         try {
-          const data = JSON.parse(r.data);
           // Check if main assignee is this staff member (checking name or username)
           if (data.mainAssignee === s.name || data.mainAssignee === s.username) {
             const revenue = Number(data.revenue || data.feeAmount || 0);

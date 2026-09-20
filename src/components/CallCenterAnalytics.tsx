@@ -47,6 +47,7 @@ import {
 import { fetchApi } from "../utils/api";
 import { io } from "socket.io-client";
 import { motion, AnimatePresence } from "motion/react";
+import { isMissedCall, normalizeCallRecords } from "./erp/callHelpers";
 
 interface CallCenterStats {
   totalCalls: number;
@@ -292,15 +293,16 @@ export default function CallCenterAnalytics({ user }: { user: any }) {
       const logResRaw = await fetchApi(`/api/calls?${logParams.toString()}`);
       const logRes = await logResRaw.json();
       if (logRes && logRes.data) {
+        const normalizedLogs = normalizeCallRecords(logRes.data);
         if (isLoadMore) {
-          setCallLogs(prev => [...prev, ...logRes.data]);
+          setCallLogs(prev => [...prev, ...normalizedLogs]);
         } else {
-          setCallLogs(logRes.data);
+          setCallLogs(normalizedLogs);
         }
         setNextCursor(logRes.nextCursor || "");
         setHasNextPage(logRes.hasNextPage || false);
       } else if (Array.isArray(logRes)) {
-        setCallLogs(logRes);
+        setCallLogs(normalizeCallRecords(logRes));
         setHasNextPage(false);
       }
 
@@ -315,10 +317,7 @@ export default function CallCenterAnalytics({ user }: { user: any }) {
   // Initial Seed for Missed Queue
   useEffect(() => {
     if (callLogs.length > 0) {
-      const missedCalls = callLogs.filter(c => 
-        c.type === "incoming" && 
-        ["missed", "no_answer", "failed", "rejected"].includes(c.status?.toLowerCase() || "")
-      ).map(c => ({
+      const missedCalls = callLogs.filter(isMissedCall).map(c => ({
         id: c.id,
         phone: c.phone || c.phone_number,
         name: c.name || "Khách hàng ẩn danh",

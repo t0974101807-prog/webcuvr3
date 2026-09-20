@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   X, Plus, Edit2, Trash2, Save, Image as ImageIcon, Type, AlignLeft, FileText, Search,
@@ -6,7 +6,7 @@ import {
   FileSpreadsheet, ShieldCheck, FileType, Bell, Settings, Briefcase, Scale, 
   Newspaper, UserPlus, Users2, UserCircle, User, MessageSquare, TrendingUp, Check, CheckCircle2,
   Paperclip, Send, Phone, Mail, Shield, Lock, Key, Clock, Smartphone, Info, RefreshCw, Building2,
-  BookOpen, Award, ArrowLeft, Calculator, Cpu, Sparkles, ChevronDown, Bot, Eye, EyeOff, Terminal, Share2, Layout, Upload, History
+  BookOpen, Award, ArrowLeft, Calculator, Cpu, Sparkles, ChevronDown, Bot, Eye, EyeOff, Terminal, Share2, Layout, Upload, History, Maximize2, Minimize2
 } from 'lucide-react';
 
 import { 
@@ -26,13 +26,14 @@ import DashboardOverview from './DashboardOverview';
 import { io } from 'socket.io-client';
 import { numberToWords } from '../utils/numberToWords';
 import { PROVINCES_DATA } from '../data/provinces';
-import { ActivityLogsView } from './ActivityLogsView';
+import RolePermissionsMatrix from './RolePermissionsMatrix';
+import { useFullscreen } from '../hooks/useFullscreen';
 
 interface AdminDashboardProps {
   onBack: () => void;
   user: User | null;
   onUpdateUser?: (user: any) => void;
-  initialTab?: 'services' | 'legal_services' | 'news' | 'recruitment' | 'team' | 'users' | 'clients' | 'messages' | 'stats' | 'profile' | 'settings' | 'offices' | 'contacts' | 'tools' | 'dashboard_overview' | 'activity_logs';
+  initialTab?: 'services' | 'legal_services' | 'news' | 'recruitment' | 'team' | 'users' | 'clients' | 'messages' | 'stats' | 'profile' | 'settings' | 'offices' | 'contacts' | 'tools' | 'dashboard_overview';
 }
 
 function NavItem({ icon, label, active, onClick }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void }) {
@@ -146,6 +147,7 @@ const SYSTEM_TITLES = [
 ];
 
 import { translateRole } from './ERP';
+import { filterNonAdminPersonnel, isAdminAccount } from '../utils/personnelFilters';
 
 export const ROLE_NAMES: Record<string, string> = {
   admin: 'Quản trị viên',
@@ -499,7 +501,9 @@ function getGreetingText(user: any, language: string = 'vi') {
 }
 
 export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab = 'dashboard_overview' }: AdminDashboardProps) {
-  const [activeTab, setActiveTab] = useState<'services' | 'legal_services' | 'news' | 'recruitment' | 'team' | 'users' | 'clients' | 'messages' | 'stats' | 'profile' | 'settings' | 'offices' | 'contacts' | 'tools' | 'dashboard_overview' | 'activity_logs'>(initialTab);
+  const cmsContentRef = useRef<HTMLElement | null>(null);
+  const { isFullscreen: isCmsFullscreen, toggleFullscreen: toggleCmsFullscreen, virtualClass: cmsFullscreenClass } = useFullscreen(cmsContentRef);
+  const [activeTab, setActiveTab] = useState<'services' | 'legal_services' | 'news' | 'recruitment' | 'team' | 'users' | 'clients' | 'messages' | 'stats' | 'profile' | 'settings' | 'offices' | 'contacts' | 'tools' | 'dashboard_overview'>(initialTab);
   const [messages, setMessages] = useState<any[]>([]);
   const [formMessages, setFormMessages] = useState<any[]>([]);
   const [activeMessageTab, setActiveMessageTab] = useState<'live' | 'form'>('live');
@@ -517,22 +521,9 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
     return rawChartData;
   }, [rawChartData, statsRange]);
 
-  const legalPerfData = stats?.legalServicesPerformance || [
-    { name: 'Tranh tụng', casesCount: 35, revenue: 1200000000, conversionRate: 85, satisfaction: 98, activeConsultations: 12, color: '#a855f7' },
-    { name: 'Tư vấn Pháp luật', casesCount: 42, revenue: 850000000, conversionRate: 90, satisfaction: 97, activeConsultations: 15, color: '#3b82f6' },
-    { name: 'Đại diện Ngoài tố tụng', casesCount: 28, revenue: 620000000, conversionRate: 88, satisfaction: 95, activeConsultations: 9, color: '#06b6d4' },
-    { name: 'Pháp chế & Nội bộ', casesCount: 54, revenue: 490000000, conversionRate: 94, satisfaction: 99, activeConsultations: 18, color: '#10b981' },
-    { name: 'Trọng tài & Hòa giải', casesCount: 22, revenue: 380000000, conversionRate: 86, satisfaction: 96, activeConsultations: 7, color: '#f59e0b' },
-  ];
+  const legalPerfData = stats?.legalServicesPerformance || [];
 
-  const monthlyTrendData = stats?.monthlyServicesTrend || [
-    { month: 'Tháng 1', 'Tranh tụng': 5, 'Tư vấn Pháp luật': 6, 'Đại diện Ngoài tố tụng': 4, 'Pháp chế & Nội bộ': 8, 'Trọng tài & Hòa giải': 3 },
-    { month: 'Tháng 2', 'Tranh tụng': 6, 'Tư vấn Pháp luật': 8, 'Đại diện Ngoài tố tụng': 5, 'Pháp chế & Nội bộ': 10, 'Trọng tài & Hòa giải': 4 },
-    { month: 'Tháng 3', 'Tranh tụng': 8, 'Tư vấn Pháp luật': 9, 'Đại diện Ngoài tố tụng': 7, 'Pháp chế & Nội bộ': 12, 'Trọng tài & Hòa giải': 5 },
-    { month: 'Tháng 4', 'Tranh tụng': 10, 'Tư vấn Pháp luật': 12, 'Đại diện Ngoài tố tụng': 8, 'Pháp chế & Nội bộ': 15, 'Trọng tài & Hòa giải': 6 },
-    { month: 'Tháng 5', 'Tranh tụng': 12, 'Tư vấn Pháp luật': 15, 'Đại diện Ngoài tố tụng': 10, 'Pháp chế & Nội bộ': 18, 'Trọng tài & Hòa giải': 8 },
-    { month: 'Tháng 6', 'Tranh tụng': 35, 'Tư vấn Pháp luật': 42, 'Đại diện Ngoài tố tụng': 28, 'Pháp chế & Nội bộ': 54, 'Trọng tài & Hòa giải': 22 },
-  ];
+  const monthlyTrendData = stats?.monthlyServicesTrend || [];
   const [activeVisitorId, setActiveVisitorId] = useState<string | null>(null);
   const [visitorMessages, setVisitorMessages] = useState<any[]>([]);
   const [adminInput, setAdminInput] = useState('');
@@ -592,7 +583,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
   const [editingOffice, setEditingOffice] = useState<any | null>(null);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [showPracticeDropdown, setShowPracticeDropdown] = useState(false);
-  const [usersSubTab, setUsersSubTab] = useState<'list' | 'matrix'>('list');
+  const [usersSubTab, setUsersSubTab] = useState<'list' | 'vertical' | 'horizontal'>('list');
   const [departmentPermissions, setDepartmentPermissions] = useState<any>(() => {
     const saved = localStorage.getItem('dept_permissions');
     if (saved) {
@@ -676,7 +667,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
       let uploadedUrl = '';
       const formData = new FormData();
       formData.append('file', file);
-      const res = await fetchApi('/api/live-upload', {
+      const res = await fetchApi('/api/secure-upload', {
         method: 'POST',
         body: formData,
       });
@@ -1049,7 +1040,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
     const formData = new FormData();
     formData.append('file', file);
     try {
-      const res = await fetchApi('/api/live-upload', { method: 'POST', body: formData });
+            const res = await fetchApi('/api/secure-upload', { method: 'POST', body: formData });
       const data = await res.json();
       adminSocket.emit('send_message', {
         visitorId: activeVisitorId, senderType: 'admin', content: '', fileUrl: data.url, fileName: data.name
@@ -1288,7 +1279,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
       return;
     }
     const targetUser = users.find(u => u.id === id);
-    if (targetUser?.role === 'admin' || targetUser?.username === 'admin') {
+    if (isAdminAccount(targetUser)) {
       alert('Không thể xóa tài khoản quản trị viên.');
       return;
     }
@@ -2324,10 +2315,14 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
               <>
                 <div className="mt-6 mb-2 px-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">Hệ thống</div>
                 <NavItem icon={<Users />} label="Người dùng" active={activeTab === 'users'} onClick={() => { setActiveTab('users'); setEditingLegalService(null); setEditingService(null); setEditingNews(null); setEditingTeam(null); setEditingUser(null); setEditingOffice(null); setIsAdding(false); }} />
-                <NavItem icon={<History />} label="Nhật ký Hoạt động (Activity Logs)" active={activeTab === 'activity_logs'} onClick={() => { setActiveTab('activity_logs'); setEditingLegalService(null); setEditingService(null); setEditingNews(null); setEditingTeam(null); setEditingUser(null); setEditingOffice(null); setIsAdding(false); }} />
                 <NavItem icon={<Building2 />} label="Hệ thống văn phòng" active={activeTab === 'offices'} onClick={() => { setActiveTab('offices'); setEditingLegalService(null); setEditingService(null); setEditingNews(null); setEditingTeam(null); setEditingUser(null); setEditingOffice(null); setIsAdding(false); }} />
-                <NavItem icon={<Phone />} label="Quản lý liên hệ" active={activeTab === 'contacts'} onClick={() => { setActiveTab('contacts'); setEditingLegalService(null); setEditingService(null); setEditingNews(null); setEditingTeam(null); setEditingUser(null); setEditingOffice(null); setIsAdding(false); }} />
+              </>
+            )}
 
+            {(canManageUsers || canEditContent) && (
+              <>
+                <div className="mt-6 mb-2 px-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">Cấu hình</div>
+                <NavItem icon={<Phone />} label="Quản lý liên hệ" active={activeTab === 'contacts'} onClick={() => { setActiveTab('contacts'); setEditingLegalService(null); setEditingService(null); setEditingNews(null); setEditingTeam(null); setEditingUser(null); setEditingOffice(null); setIsAdding(false); }} />
                 <NavItem icon={<Settings />} label="Cài đặt" active={activeTab === 'settings'} onClick={() => { setActiveTab('settings'); setEditingLegalService(null); setEditingService(null); setEditingNews(null); setEditingTeam(null); setEditingUser(null); setEditingOffice(null); setIsAdding(false); }} />
               </>
             )}
@@ -2338,8 +2333,19 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
         </aside>
 
         {/* Main Content Area */}
-        <main className="flex-1 min-w-0 flex flex-col bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
+        <main ref={cmsContentRef} className={`relative flex-1 min-w-0 flex flex-col bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden ${cmsFullscreenClass}`}>
           <div className="flex-1 p-6 overflow-auto custom-scrollbar">
+            <div className="flex justify-end mb-2">
+              <button
+                type="button"
+                onClick={toggleCmsFullscreen}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 shadow-sm text-xs font-semibold transition-all"
+                title={isCmsFullscreen ? "Thu nhỏ" : "Toàn màn hình"}
+              >
+                {isCmsFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                <span>{isCmsFullscreen ? "Thu nhỏ" : "Toàn màn hình"}</span>
+              </button>
+            </div>
             {isLoading ? (
               <div className="flex justify-center items-center h-full min-h-[400px]">
                 <div className="w-8 h-8 border-4 border-[var(--color-primary)] border-t-transparent rounded-full animate-spin"></div>
@@ -5521,7 +5527,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                             {filteredChartData.length > 0 ? filteredChartData.reduce((acc: number, d: any) => acc + (d.visitors || 0), 0).toLocaleString() : 0}
                           </div>
                           <div className="text-xs text-emerald-600 font-medium mt-2 flex items-center gap-1">
-                            <TrendingUp size={14} /> Tăng trưởng +18.4% so với kỳ trước
+                            <TrendingUp size={14} /> Chưa có dữ liệu đối chiếu
                           </div>
                           <div className="absolute top-0 right-0 w-1.5 h-full bg-emerald-500"></div>
                         </div>
@@ -5553,7 +5559,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                             {filteredChartData.length > 0 ? filteredChartData.reduce((acc: number, d: any) => acc + (d.chats || 0), 0).toLocaleString() : 0}
                           </div>
                           <div className="text-xs text-indigo-600 font-medium mt-2 flex items-center gap-1">
-                            <CheckCircle2 size={14} /> Tỷ lệ chuyển đổi ~12.5%
+                            <CheckCircle2 size={14} /> Số liệu ghi nhận theo ngày
                           </div>
                           <div className="absolute top-0 right-0 w-1.5 h-full bg-indigo-500"></div>
                         </div>
@@ -5580,7 +5586,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
                           <div>
                             <h4 className="font-bold text-lg text-[var(--color-text-dark)] flex items-center gap-2">
-                              <TrendingUp className="text-[var(--color-primary)]" size={20} />
+                            <CheckCircle2 size={14} /> Chưa có dữ liệu chuyển đổi
                               Lưu Lượng Khách Hàng Truy Cập Website Hàng Ngày
                             </h4>
                             <p className="text-xs text-gray-500 mt-0.5">Theo dõi số lượt xem trang, khách truy cập độc nhất và lượt gửi yêu cầu tư vấn</p>
@@ -5682,7 +5688,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                                 <Briefcase className="text-[var(--color-primary)]" size={20} />
                                 Đánh Giá Hiệu Suất Các Dịch Vụ Pháp Lý
                               </h4>
-                              <p className="text-xs text-gray-500 mt-0.5">So sánh khối lượng hồ sơ, doanh thu và tỷ lệ chuyển đổi tư vấn thành công</p>
+                              <p className="text-xs text-gray-500 mt-0.5">So sánh khối lượng hồ sơ và doanh thu đã được ghi nhận</p>
                             </div>
 
                             <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-lg text-xs font-medium">
@@ -5699,13 +5705,6 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                                 className={`px-2.5 py-1 rounded transition-all cursor-pointer ${serviceChartMetric === 'revenue' ? 'bg-white text-gray-900 shadow-xs font-bold' : 'text-gray-500'}`}
                               >
                                 Doanh thu (Tr VNĐ)
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setServiceChartMetric('conversion')}
-                                className={`px-2.5 py-1 rounded transition-all cursor-pointer ${serviceChartMetric === 'conversion' ? 'bg-white text-gray-900 shadow-xs font-bold' : 'text-gray-500'}`}
-                              >
-                                Tỷ lệ chốt (%)
                               </button>
                             </div>
                           </div>
@@ -5728,7 +5727,6 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                                 <RechartsTooltip 
                                   formatter={(value: any, name: any) => {
                                     if (name.includes('Doanh thu')) return [`${value.toLocaleString()} Triệu VNĐ`, 'Doanh Thu'];
-                                    if (name.includes('Tỷ lệ')) return [`${value}%`, 'Tỷ Lệ Chuyển Đổi'];
                                     return [`${value} Hồ sơ`, 'Số Vụ Việc'];
                                   }}
                                   contentStyle={{ backgroundColor: '#ffffff', borderRadius: '10px', border: '1px solid #e2e8f0', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}
@@ -5744,13 +5742,6 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                                   <Bar name="Doanh thu (Triệu VNĐ)" dataKey="revenueInMillions" fill="#10b981" radius={[6, 6, 0, 0]}>
                                     {legalPerfData.map((entry: any, index: number) => (
                                       <Cell key={`cell-${index}`} fill={entry.color || '#10b981'} />
-                                    ))}
-                                  </Bar>
-                                )}
-                                {serviceChartMetric === 'conversion' && (
-                                  <Bar name="Tỷ lệ chuyển đổi (%)" dataKey="conversionRate" fill="#8b5cf6" radius={[6, 6, 0, 0]}>
-                                    {legalPerfData.map((entry: any, index: number) => (
-                                      <Cell key={`cell-${index}`} fill={entry.color || '#8b5cf6'} />
                                     ))}
                                   </Bar>
                                 )}
@@ -5838,6 +5829,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                               <Bar name="Đại diện Ngoài tố tụng" dataKey="Đại diện Ngoài tố tụng" fill="#06b6d4" stackId="a" />
                               <Bar name="Pháp chế & Nội bộ" dataKey="Pháp chế & Nội bộ" fill="#10b981" stackId="a" />
                               <Bar name="Trọng tài & Hòa giải" dataKey="Trọng tài & Hòa giải" fill="#f59e0b" stackId="a" radius={[6, 6, 0, 0]} />
+                              <Bar name="Chưa phân loại" dataKey="Chưa phân loại" fill="#94a3b8" stackId="a" radius={[6, 6, 0, 0]} />
                             </BarChart>
                           </ResponsiveContainer>
                         </div>
@@ -5848,7 +5840,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                         <div className="p-6 border-b border-gray-100 flex items-center justify-between">
                           <div>
                             <h4 className="font-bold text-lg text-[var(--color-text-dark)]">Bảng Báo Cáo Hiệu Suất Chi Tiết Dịch Vụ Pháp Lý</h4>
-                            <p className="text-xs text-gray-500 mt-0.5">Tổng hợp chỉ số KPI, tỷ lệ hài lòng và doanh thu từng danh mục dịch vụ</p>
+                            <p className="text-xs text-gray-500 mt-0.5">Tổng hợp số hồ sơ, hồ sơ đang xử lý và doanh thu đã được ghi nhận</p>
                           </div>
                         </div>
 
@@ -5859,9 +5851,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                                 <th className="px-6 py-3.5">Dịch Vụ Pháp Lý</th>
                                 <th className="px-6 py-3.5 text-center">Số Vụ Việc / Hồ Sơ</th>
                                 <th className="px-6 py-3.5 text-center">Đang Tư Vấn</th>
-                                <th className="px-6 py-3.5 text-right">Doanh Thu Dự Kiến</th>
-                                <th className="px-6 py-3.5 text-center">Tỷ Lệ Chốt (%)</th>
-                                <th className="px-6 py-3.5 text-center">Mức Hài Lòng</th>
+                                <th className="px-6 py-3.5 text-right">Doanh Thu Đã Ghi Nhận</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
@@ -5881,19 +5871,6 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                                   </td>
                                   <td className="px-6 py-4 text-right font-bold text-emerald-600">
                                     {(item.revenue / 1000000).toLocaleString()} Tr VNĐ
-                                  </td>
-                                  <td className="px-6 py-4 text-center">
-                                    <div className="flex items-center justify-center gap-2">
-                                      <div className="w-16 bg-gray-200 rounded-full h-2 overflow-hidden">
-                                        <div className="bg-indigo-600 h-2 rounded-full" style={{ width: `${item.conversionRate}%` }}></div>
-                                      </div>
-                                      <span className="font-semibold text-xs text-gray-700">{item.conversionRate}%</span>
-                                    </div>
-                                  </td>
-                                  <td className="px-6 py-4 text-center">
-                                    <span className="inline-flex items-center gap-1 font-bold text-amber-600 bg-amber-50 px-2.5 py-0.5 rounded-md text-xs">
-                                      ★ {item.satisfaction}%
-                                    </span>
                                   </td>
                                 </tr>
                               ))}
@@ -5944,14 +5921,24 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                             Danh sách tài khoản
                           </button>
                           <button
-                            onClick={() => setUsersSubTab('matrix')}
+                            onClick={() => setUsersSubTab('vertical')}
                             className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors cursor-pointer ${
-                              usersSubTab === 'matrix'
+                              usersSubTab === 'vertical'
                                 ? 'border-[var(--color-primary)] text-[var(--color-primary)] font-semibold'
                                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                             }`}
                           >
-                            Ma trận Quyền phòng ban
+                            Phân quyền dọc · Chức danh
+                          </button>
+                          <button
+                            onClick={() => setUsersSubTab('horizontal')}
+                            className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors cursor-pointer ${
+                              usersSubTab === 'horizontal'
+                                ? 'border-[var(--color-primary)] text-[var(--color-primary)] font-semibold'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                            }`}
+                          >
+                            Phân quyền ngang · Phòng ban
                           </button>
                         </div>
                       )}
@@ -6254,7 +6241,9 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                             </button>
                           </div>
                         </form>
-                      ) : usersSubTab === 'matrix' ? (
+                      ) : usersSubTab === 'vertical' ? (
+                        <RolePermissionsMatrix />
+                      ) : usersSubTab === 'horizontal' ? (
                         <div className="bg-white p-6 rounded-lg shadow-md border border-gray-100 space-y-6">
                           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-100 pb-4">
                             <div>
@@ -6377,7 +6366,10 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                         </div>
                       ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                          {users.filter(u => u.role !== 'client' && u.role !== 'admin' && u.username !== 'admin').map((u) => (
+                          {[...users]
+                            .filter(u => (u.role || '').toLowerCase() !== 'client')
+                            .sort((a, b) => (isAdminAccount(a) ? -1 : 0) - (isAdminAccount(b) ? -1 : 0))
+                            .map((u) => (
                             <div key={u.id} className="bg-white p-4 rounded-lg shadow-sm border border-gray-100 flex flex-col justify-between">
                               <div>
                                 <div className="flex items-center gap-2 mb-2 flex-wrap">
@@ -6441,20 +6433,22 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                                 )}
                               </div>
                               <div className="flex justify-end gap-2 mt-4 pt-4 border-t border-gray-100">
-                                <button
-                                  onClick={() => handleResetUserAccount(u.id)}
-                                  className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
-                                  title="Khôi phục tài khoản (Reset mật khẩu & Thiết bị)"
-                                >
-                                  <RefreshCw size={18} />
-                                </button>
+                                {!isAdminAccount(u) && (
+                                  <button
+                                    onClick={() => handleResetUserAccount(u.id)}
+                                    className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+                                    title="Khôi phục tài khoản (Reset mật khẩu & Thiết bị)"
+                                  >
+                                    <RefreshCw size={18} />
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => setEditingUser({ ...u, password: '' })}
                                   className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
                                 >
                                   <Edit2 size={18} />
                                 </button>
-                                {u.role !== 'admin' && u.username !== 'admin' && (
+                                {!isAdminAccount(u) && (
                                   <button
                                     onClick={() => handleDeleteUser(u.id)}
                                     className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -6744,7 +6738,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
 
 
 {/* Contact & CMS Management Tab */}
-                  {activeTab === 'contacts' && canManageUsers && (
+                  {activeTab === 'contacts' && (canManageUsers || canEditContent) && (
                     <div className="space-y-6 animate-in fade-in duration-200">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                         <div>
@@ -7419,7 +7413,7 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
 
 
 {/* Settings Tab */}
-                  {activeTab === 'settings' && canManageUsers && (
+                  {activeTab === 'settings' && (canManageUsers || canEditContent) && (
                     <div className="space-y-6">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                         <div>
@@ -8031,12 +8025,6 @@ export default function AdminDashboard({ onBack, user, onUpdateUser, initialTab 
                     </div>
                   )}
 
-                  {/* Activity Logs Tab */}
-                  {activeTab === 'activity_logs' && (
-                    <div className="h-full">
-                      <ActivityLogsView user={user} language={language} isEmbedded={true} />
-                    </div>
-                  )}
                 </>
               )}
           </div>

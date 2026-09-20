@@ -13,10 +13,11 @@ import { config } from "./config/env";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import db from "./db/database";
-import { syncFromFirestore } from "./db/firestore-sync";
+import { startRealTimeSync, syncFromFirestore } from "./db/firestore-sync";
 import { runMigration } from "./db/migration";
 import { RequestTracker } from "./middleware/RequestTracker";
 import MemoryMonitor from "./services/MemoryMonitor";
+import { checkResourceAccess } from "./middleware/auth";
 
 // Routes
 import authRoutes from "./modules/auth/auth.routes";
@@ -40,6 +41,8 @@ import gatewayRoutes from "./modules/api_gateway/gateway.routes";
 import telephonyRoutes from "./controllers/telephony.controller";
 import { setPaymentSocketServer } from "./modules/payment/payment.socket";
 import { TrashService } from "./services/trash.service";
+import { retryFirestoreSync } from "./db/firestore-sync";
+import { domainRecordEvents } from "./domain/events/domainRecordEvents";
 
 const app = express();
 app.set('trust proxy', 1);
@@ -51,6 +54,24 @@ const io = new Server(httpServer, {
 app.set("io", io);
 setPaymentSocketServer(io);
 TrashService.setSocketServer(io);
+
+domainRecordEvents.on("changed", (change) => {
+  io.emit("domain_records_updated", change);
+  if (change.action === "upsert") {
+    io.emit("erp_record_updated", {
+      id: change.id,
+      data: change.data,
+      domain: change.domain,
+      timestamp: change.timestamp,
+    });
+  } else {
+    io.emit("erp_record_deleted", {
+      id: change.id,
+      domain: change.domain,
+      timestamp: change.timestamp,
+    });
+  }
+});
 
 const PORT = config.PORT;
 
@@ -141,7 +162,7 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 // General API Rate Limiter
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // Maximum 1000 requests per IP in 15 minutes
+  max: Number.parseInt(process.env.API_RATE_LIMIT_MAX || "5000", 10),
   standardHeaders: true,
   legacyHeaders: false,
   handler: (req: any, res: any) => {
@@ -165,7 +186,7 @@ app.use("/api", apiLimiter);
 
 /* SESSION */
 const SqliteStore = sqliteStoreFactory(session);
-app.use("/api", session({
+const sessionMiddleware = session({
   store: new SqliteStore({
     client: db, 
     expired: {
@@ -182,7 +203,9 @@ app.use("/api", session({
     sameSite: 'none',
     secure: true
   }
-}));
+});
+app.use("/api", sessionMiddleware);
+io.engine.use(sessionMiddleware);
 
 /* HEALTH ENDPOINTS & PROBES (Production Tiered Health) */
 app.get("/healthz", (req, res) => res.status(200).send("OK"));
@@ -289,13 +312,37 @@ app.use("/uploads", express.static(uploadPath, {
 
 /* WEBSOCKET LOGIC */
 io.on("connection", (socket) => {
+  const getSocketUser = () => (socket.request as any).session?.user || null;
+  const requireSocketUser = () => {
+    const user = getSocketUser();
+    if (!user) {
+      socket.emit("socket_authorization_error", { message: "Yêu cầu đăng nhập để thực hiện thao tác này." });
+      return null;
+    }
+    return user;
+  };
+  const requireInternalSocketUser = () => {
+    const user = requireSocketUser();
+    if (user && String(user.role || "").toLowerCase() === "client") {
+      socket.emit("socket_authorization_error", { message: "Thao tác này chỉ dành cho nhân sự nội bộ." });
+      return null;
+    }
+    return user;
+  };
+
   // Visitor joins their own unique room
   socket.on("join_visitor", (visitorId: string) => {
+    const user = getSocketUser();
+    if (user && String(user.role || "").toLowerCase() === "client") {
+      const allowedIds = [String(user.username || ""), `client_${user.id}`];
+      if (!allowedIds.includes(String(visitorId))) return;
+    }
     socket.join(`visitor_${visitorId}`);
   });
 
   // Admin joins the admin room to listen for all incoming chats
   socket.on("join_admin", () => {
+    if (!requireInternalSocketUser()) return;
     socket.join("admins");
   });
 
@@ -307,6 +354,9 @@ io.on("connection", (socket) => {
     fileUrl?: string; 
     fileName?: string 
   }) => {
+    const user = data.senderType === "admin" ? requireInternalSocketUser() : getSocketUser();
+    if (data.senderType === "admin" && !user) return;
+
     // 1. Save to DB
     const created_at = new Date().toISOString();
     try {
@@ -329,6 +379,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("mark_read", (visitorId: string) => {
+    if (!requireInternalSocketUser()) return;
     try {
       db.prepare("UPDATE live_messages SET is_read = 1 WHERE visitor_id = ? AND sender_type = 'visitor'").run(visitorId);
       io.to("admins").emit("messages_read", { visitorId });
@@ -336,10 +387,13 @@ io.on("connection", (socket) => {
   });
 
   socket.on("join_erp", () => {
+    if (!requireInternalSocketUser()) return;
     socket.join("erp_users");
   });
 
   socket.on("join_record", (recordId: string) => {
+    const user = requireSocketUser();
+    if (!user || !checkResourceAccess(user, "record", String(recordId))) return;
     socket.join(`record_${recordId}`);
   });
 
@@ -351,16 +405,21 @@ io.on("connection", (socket) => {
     fileUrl?: string;
     fileName?: string;
   }) => {
+    const user = requireSocketUser();
+    if (!user || !checkResourceAccess(user, "record", String(data.recordId))) return;
+
+    const senderName = user.name || user.username || "Unknown";
+    const senderRole = user.role || "staff";
     const created_at = new Date().toISOString();
     try {
       const info = db.prepare('INSERT INTO record_messages (record_id, sender_name, sender_role, content, file_url, file_name, created_at, is_read) VALUES (?, ?, ?, ?, ?, ?, ?, 0)')
-        .run(data.recordId, data.senderName, data.senderRole, data.content, data.fileUrl || null, data.fileName || null, created_at);
+        .run(data.recordId, senderName, senderRole, data.content, data.fileUrl || null, data.fileName || null, created_at);
       
       const newMsg = {
         id: info.lastInsertRowid,
         record_id: data.recordId,
-        sender_name: data.senderName,
-        sender_role: data.senderRole,
+        sender_name: senderName,
+        sender_role: senderRole,
         content: data.content,
         file_url: data.fileUrl,
         file_name: data.fileName,
@@ -376,6 +435,8 @@ io.on("connection", (socket) => {
   });
 
   socket.on("mark_internal_messages_read", (data: { recordId: string }) => {
+    const user = requireSocketUser();
+    if (!user || !checkResourceAccess(user, "record", String(data.recordId))) return;
     try {
       db.prepare("UPDATE record_messages SET is_read = 1 WHERE record_id = ?").run(data.recordId);
       io.to("erp_users").emit("internal_messages_read", { recordId: data.recordId });
@@ -479,34 +540,14 @@ app.all("/api/*all", (req, res) => {
 
 /* VITE MIDDLEWARE */
 async function startServer() {
-  // Sync database with Firestore on boot in the background so it doesn't block server start
-  syncFromFirestore()
-    .then(() => {
-      runMigration();
-      try {
-        const { startRealTimeSync } = require("./db/firestore-sync");
-        startRealTimeSync();
-      } catch (errSync) {
-        console.error("Failed to start server-side real-time sync listeners:", errSync);
-      }
-    })
-    .catch((err) => {
-      console.error("Failed to sync from Firestore on startup:", err);
-      runMigration();
-      try {
-        const { startRealTimeSync } = require("./db/firestore-sync");
-        startRealTimeSync();
-      } catch (errSync) {
-        console.error("Failed to start server-side real-time sync listeners after error:", errSync);
-      }
-    });
-
   if (config.NODE_ENV !== "production") {
     try {
       const { createServer: createViteServer } = await import("vite");
       const vite = await createViteServer({
         server: { 
-          middlewareMode: true
+          middlewareMode: true,
+          // Reuse the application's HTTP server for Vite HMR instead of binding a second socket.
+          hmr: { server: httpServer }
         },
         appType: "spa",
       });
@@ -556,14 +597,6 @@ async function startServer() {
     }
   });
 
-  // Start the Memory Monitoring subsystem
-  try {
-    MemoryMonitor.initialize();
-  } catch (err: any) {
-    console.error("CRITICAL ERROR: Failed to initialize MemoryMonitor:", err.message);
-    process.exit(1);
-  }
-
   // Handle Graceful Shutdown signals
   const gracefulShutdown = (signal: string) => {
     console.log(`[Shutdown Service] Received ${signal}. Starting graceful termination...`);
@@ -596,6 +629,47 @@ async function startServer() {
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`LAW FIRM ERP AI RUNNING ON HTTP://LOCALHOST:${PORT}`);
+
+    // Start background work only after the server has successfully bound its port.
+    syncFromFirestore()
+      .then(() => {
+        runMigration();
+        TrashService.cleanupExpired(30).catch((err) => console.error("Initial trash cleanup failed:", err));
+        setInterval(() => {
+          TrashService.cleanupExpired(30).catch((err) => console.error("Scheduled trash cleanup failed:", err));
+        }, 60 * 60 * 1000);
+        setInterval(() => {
+          retryFirestoreSync().catch((err) => console.error("Scheduled Firestore retry failed:", err));
+        }, 5 * 60 * 1000);
+        try {
+          startRealTimeSync();
+        } catch (errSync) {
+          console.error("Failed to start server-side real-time sync listeners:", errSync);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to sync from Firestore on startup:", err);
+        runMigration();
+        TrashService.cleanupExpired(30).catch((cleanupErr) => console.error("Initial trash cleanup failed:", cleanupErr));
+        setInterval(() => {
+          TrashService.cleanupExpired(30).catch((cleanupErr) => console.error("Scheduled trash cleanup failed:", cleanupErr));
+        }, 60 * 60 * 1000);
+        setInterval(() => {
+          retryFirestoreSync().catch((retryErr) => console.error("Scheduled Firestore retry failed:", retryErr));
+        }, 5 * 60 * 1000);
+        try {
+          startRealTimeSync();
+        } catch (errSync) {
+          console.error("Failed to start server-side real-time sync listeners after error:", errSync);
+        }
+      });
+
+    try {
+      MemoryMonitor.initialize();
+    } catch (err: any) {
+      console.error("CRITICAL ERROR: Failed to initialize MemoryMonitor:", err.message);
+      process.exit(1);
+    }
   });
 }
 

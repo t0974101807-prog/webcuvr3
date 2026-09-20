@@ -3,19 +3,13 @@ import { Shield, MessageCircle, FileText, Clock, CheckCircle, AlertCircle, Send,
 import { fetchApi } from '../utils/api';
 import { motion } from 'motion/react';
 import { io, Socket } from 'socket.io-client';
+import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
+import { db } from '../firebase';
 import ClientManagement from './ClientManagement';
 import { useContactSettings } from '../hooks/useContactSettings';
 import DocumentSigning from './DocumentSigning';
 import { useFullscreen } from '../hooks/useFullscreen';
-import { 
-  collection, 
-  onSnapshot, 
-  doc, 
-  setDoc,
-  addDoc,
-  serverTimestamp
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../utils/firebase';
+import { matchesClientRecord } from '../utils/clientRecordLink';
 
 interface ClientPortalProps {
   user: any;
@@ -24,7 +18,9 @@ interface ClientPortalProps {
 
 export default function ClientPortal({ user, onBack }: ClientPortalProps) {
   const { settings: contactSettings } = useContactSettings();
-  if (user?.role !== 'client') {
+  const accountType = String(user?.account_type || user?.accountType || '').toUpperCase();
+  const isExternalUser = accountType === 'CUSTOMER' || accountType === 'PARTNER' || ['client', 'customer', 'partner'].includes(String(user?.role || '').toLowerCase());
+  if (!isExternalUser) {
     return <ClientManagement language="vi" onBack={onBack} />;
   }
 
@@ -36,7 +32,7 @@ export default function ClientPortal({ user, onBack }: ClientPortalProps) {
   const [socket, setSocket] = useState<Socket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Appointments states for real-time Firestore sync and bookings
+  // Appointments state and authenticated API booking flow
   const [appointments, setAppointments] = useState<any[]>([]);
   const [showAddApptForm, setShowAddApptForm] = useState(false);
   const [apptDate, setApptDate] = useState('');
@@ -60,28 +56,12 @@ export default function ClientPortal({ user, onBack }: ClientPortalProps) {
 
   useEffect(() => {
     if (!user) return;
-
-    if (db && (db as any).isMock) {
-      console.warn("Skipping real-time appointments listener in ClientPortal because database is in mock fallback mode.");
-      return;
-    }
-
-    // Real-time onSnapshot subscriber for client appointments
-    const unsub = onSnapshot(collection(db, 'appointments'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach((d) => {
-        const data = d.data();
-        if (data.phone === user.phone || data.clientName === user.name) {
-          list.push({ id: d.id, ...data });
-        }
-      });
-      list.sort((a, b) => b.id.localeCompare(a.id));
-      setAppointments(list);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'appointments');
-    });
-
-    return () => unsub();
+    fetchApi('/api/appointments')
+      .then((response) => response.json())
+      .then((data) => {
+        if (Array.isArray(data)) setAppointments(data);
+      })
+      .catch((error) => console.error('Failed to load appointments', error));
   }, [user]);
 
   useEffect(() => {
@@ -89,14 +69,11 @@ export default function ClientPortal({ user, onBack }: ClientPortalProps) {
     fetchApi('/api/erp-records')
       .then(res => res.json())
       .then(data => {
-        if (Array.isArray(data)) {
-          if (user?.case_id) {
-            const userCases = data.filter(c => c.id === user.case_id || c.systemId === user.case_id);
-            const deduplicated = Array.from(new Map(userCases.map(c => [c.systemId || c.id, c])).values());
-            setCases(deduplicated);
-          } else {
-            setCases([]);
-          }
+        const records = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
+        if (records.length > 0 || data?.success) {
+          const userCases = records.filter((record) => matchesClientRecord(record, user));
+          const deduplicated = Array.from(new Map(userCases.map(c => [c.systemId || c.id, c])).values());
+          setCases(deduplicated);
         }
       })
       .catch(console.error)
@@ -142,7 +119,7 @@ export default function ClientPortal({ user, onBack }: ClientPortalProps) {
     const formData = new FormData();
     formData.append('file', file);
     try {
-      const uploadRes = await fetch('/api/live-upload', { method: 'POST', body: formData });
+      const uploadRes = await fetchApi('/api/secure-upload', { method: 'POST', body: formData });
       const data = await uploadRes.json();
       if (data.url) {
         socket.emit('send_message', {
@@ -494,12 +471,19 @@ export default function ClientPortal({ user, onBack }: ClientPortalProps) {
                     status: 'pending' as const
                   };
                   try {
-                    await setDoc(doc(db, 'appointments', newApp.id), newApp);
+                    const response = await fetchApi('/api/appointments', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(newApp),
+                    });
+                    if (!response.ok) throw new Error('Không thể đặt lịch hẹn');
+                    const saved = await response.json();
+                    setAppointments((previous) => [{ ...newApp, id: saved.id || newApp.id }, ...previous]);
                     setShowAddApptForm(false);
                     setApptNotes('');
                     setApptDate('');
                   } catch (error) {
-                    handleFirestoreError(error, OperationType.CREATE, `appointments/${newApp.id}`);
+                    console.error('Failed to create appointment', error);
                   } finally {
                     setIsBookingAppt(false);
                   }

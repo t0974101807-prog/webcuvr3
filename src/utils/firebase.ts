@@ -1,26 +1,5 @@
-import { doc, getDocFromServer } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 export { db, auth };
-
-// Validate Connection to Firestore as per Firebase skill constraints
-async function testConnection() {
-  if (typeof window === 'undefined') {
-    // Skip testing connection on the server-side where outbound connections are restricted
-    return;
-  }
-  if (db && (db as any).isMock) {
-    console.warn("Skipping Firestore connection test since database is in mock fallback mode.");
-    return;
-  }
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && (error.message.includes('the client is offline') || error.message.includes('offline'))) {
-      console.error("Please check your Firebase configuration.");
-    }
-  }
-}
-testConnection();
 
 export enum OperationType {
   CREATE = 'create',

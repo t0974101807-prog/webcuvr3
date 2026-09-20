@@ -55,6 +55,7 @@ import {
   Area
 } from "recharts";
 import * as XLSX from "xlsx";
+import { filterNonAdminPersonnel } from "../utils/personnelFilters";
 
 interface DossierBrainCenterProps {
   records: any[];
@@ -1211,7 +1212,7 @@ Hãy xuất ra bản Đánh giá Chỉ huy (Executive Command Insights) bằng t
                     className="w-full p-2.5 border border-slate-300 rounded-xl bg-white outline-none"
                   >
                     <option value="">-- Giữ nguyên người đảm trách cũ --</option>
-                    {users.filter((u: any) => u.role !== 'admin' && u.username !== 'admin').map((u) => (
+                    {filterNonAdminPersonnel(users || []).map((u: any) => (
                       <option key={u.id} value={u.name || u.username}>
                         {u.name || u.username} ({u.role || "Chuyên viên"})
                       </option>

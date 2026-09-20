@@ -8,6 +8,8 @@ import { syncRowToFirestore, deleteFromFirestore } from "../../db/firestore-sync
 import { TrashService } from "../../services/trash.service";
 import { SystemDataAccess, mapCategoryToDomain } from "../../system/data-access/SystemDataAccess";
 import { createActivityLog } from "../../services/activityLog.service";
+import { SharedDirectoryService } from "../../application/services/sharedDirectory.service";
+import { matchesClientRecord } from "../../utils/clientRecordLink";
 
 function encodeCursor(obj: any): string {
   return Buffer.from(JSON.stringify(obj)).toString("base64")
@@ -26,6 +28,25 @@ function decodeCursor(str: string): any {
 }
 
 const router = Router();
+
+function filterRecordsForUser(records: any[], currentUser: any) {
+  if (!currentUser || !Array.isArray(records)) return records;
+
+  const roleName = String(currentUser.role || "").toLowerCase();
+  const mappedRole = mapRoleToDb(currentUser.role);
+  const canViewAll = ["admin", "director", "deputyDirector", "controller"].includes(mappedRole) || roleName === "admin";
+  if (canViewAll) return records;
+
+  const accountType = String(currentUser.account_type || currentUser.accountType || '').toUpperCase();
+  const isExternalUser = accountType === 'CUSTOMER' || accountType === 'PARTNER' || roleName === "client" || roleName === "customer" || roleName === "partner" || roleName === "khach hang" || roleName === "doi tac";
+  if (isExternalUser) {
+    return records.filter((record: any) => {
+      return matchesClientRecord(record, currentUser);
+    });
+  }
+
+  return records;
+}
 
 router.get("/internal-messages/:id", auth, requireResourceAccess("chat", "id"), (req: any, res: any) => {
   try {
@@ -113,7 +134,7 @@ const createCaseHandler = async (req: any, res: any) => {
   const userRole = currentUser?.role;
   const mappedRole = mapRoleToDb(userRole);
   const p = db.prepare(`SELECT editAllRecords, editPersonalRecords FROM role_permissions WHERE role=?`).get(mappedRole) as any;
-  const canCreate = p?.editAllRecords || p?.editPersonalRecords || ['admin', 'director', 'deputyDirector', 'controller', 'lawyer', 'legal_assistant'].includes(mappedRole) || true;
+  const canCreate = !!p?.editAllRecords || !!p?.editPersonalRecords || ['admin', 'director', 'deputyDirector', 'controller', 'lawyer', 'legal_assistant'].includes(mappedRole);
   if (!canCreate) {
     return res.status(403).json({ error: "Bạn không có quyền tạo hồ sơ vụ án mới" });
   }
@@ -273,7 +294,8 @@ router.delete("/record-types/:id", requirePermission('manageWeb'), (req: any, re
 
 router.get("/erp-records/all", auth, (req: any, res: any) => {
   try {
-    const records = SystemDataAccess.getAllRecords();
+    const currentUser = req.user || req.session?.user;
+    const records = filterRecordsForUser(SystemDataAccess.getAllRecords(), currentUser);
     res.json({
       success: true,
       data: records
@@ -302,7 +324,7 @@ router.get("/erp-records", auth, (req: any, res: any) => {
 
     const limitVal = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
 
-    const { records, nextCursor, hasNextPage } = SystemDataAccess.queryFederated({
+    const { records: federatedRecords, nextCursor, hasNextPage } = SystemDataAccess.queryFederated({
       category: req.query.category as string,
       search: (req.query.q || req.query.search) as string,
       branch: req.query.branch as string,
@@ -317,6 +339,7 @@ router.get("/erp-records", auth, (req: any, res: any) => {
       limit: limitVal,
       cursorPayload
     });
+    const records = filterRecordsForUser(federatedRecords, req.user || req.session?.user);
 
     res.json({
       success: true,
@@ -333,9 +356,11 @@ router.get("/erp-records", auth, (req: any, res: any) => {
   }
 });
 
-router.get("/erp-records/detail", (req: any, res: any) => {
+router.get("/erp-records/detail", auth, (req: any, res: any) => {
   try {
-    // Note: No auth middleware here so public QR scans can view the status
+    const currentUser = req.user || req.session?.user || null;
+    const isClient = currentUser && String(currentUser.role || "").toLowerCase() === "client";
+
     const id = req.query.id;
     console.log("QR Lookup for id:", id);
     if (!id) return res.status(400).json({error: "Missing id"});
@@ -353,7 +378,7 @@ router.get("/erp-records/detail", (req: any, res: any) => {
     for (const row of rows) {
       if (!row.data) continue;
       const parsed = JSON.parse(row.data);
-      if (
+      const matches = (
         normalize(parsed.id) === searchId ||
         normalize(parsed.systemId) === searchId ||
         normalize(parsed.contractId) === searchId ||
@@ -367,7 +392,19 @@ router.get("/erp-records/detail", (req: any, res: any) => {
         parsed.clientIdCard === id ||
         parsed.contractDetails?.customerIdCard === id ||
         parsed.contractDetails?.obligorIdCard === id
-      ) {
+      );
+      if (!matches) continue;
+
+      if (isClient) {
+        const clientOwned =
+          parsed.client === currentUser.name ||
+          parsed.clientIdCard === currentUser.username ||
+          parsed.clientPhone === currentUser.phone ||
+          String(parsed.id || "") === String(currentUser.case_id || "") ||
+          String(parsed.systemId || "") === String(currentUser.case_id || "") ||
+          String(parsed.contractId || "") === String(currentUser.case_id || "");
+        if (clientOwned) foundRecords.push(parsed);
+      } else {
         foundRecords.push(parsed);
       }
     }
@@ -412,6 +449,11 @@ router.post("/erp-records", auth, async (req: any, res: any) => {
     
     // Check if record exists
     const existing = SystemDataAccess.getRecordById(recordId);
+    const legacyExisting = db.prepare("SELECT id FROM erp_records WHERE id = ?").get(recordId);
+
+    if (req.body?.createOnly && (existing || legacyExisting)) {
+      return res.status(409).json({ error: "Mã hồ sơ đã tồn tại. Hồ sơ mới không được ghi đè hồ sơ cũ." });
+    }
     
     if (!existing && !canEditAll && !canEditPersonal) {
       return res.status(403).json({ error: "Bạn không có quyền tạo mới hồ sơ" });
@@ -550,14 +592,17 @@ router.post("/erp-records", auth, async (req: any, res: any) => {
       }
     } catch (ioErr) {}
 
-    // Sync to Firestore
-    try {
-      await syncRowToFirestore("cases", id);
-      const domain = mapCategoryToDomain(data.category || data.practice_area);
-      await syncRowToFirestore(`${domain}_cases`, id);
-    } catch (fsErr) {
-      console.error("Error syncing to Firestore:", fsErr);
-    }
+    // Cloud persistence must not delay the local transaction or Socket.IO update.
+    // The Firestore service owns quota fallback and will no-op when cloud sync is blocked.
+    void (async () => {
+      try {
+        await syncRowToFirestore("cases", id);
+        const domain = mapCategoryToDomain(data.category || data.practice_area);
+        await syncRowToFirestore(`${domain}_cases`, id);
+      } catch (fsErr) {
+        console.warn("Deferred Firestore sync skipped:", fsErr);
+      }
+    })();
 
     res.json({success: true});
   } catch(e) {
@@ -618,7 +663,7 @@ const deleteCaseHandler = async (req: any, res: any) => {
     const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Người dùng";
     const mappedRole = mapRoleToDb(userRole);
     const p = db.prepare(`SELECT deleteRecords, editAllRecords FROM role_permissions WHERE role=?`).get(mappedRole) as any;
-    const canDelete = p?.deleteRecords || p?.editAllRecords || mappedRole === 'admin' || mappedRole === 'director' || mappedRole === 'deputyDirector' || mappedRole === 'controller' || true;
+    const canDelete = !!p?.deleteRecords || !!p?.editAllRecords || ['admin', 'director', 'deputyDirector', 'controller'].includes(mappedRole);
 
     if (!canDelete) {
       return res.status(403).json({ 
@@ -691,6 +736,83 @@ const getTrashHandler = async (req: any, res: any) => {
 router.get("/recycle-bin", auth, getTrashHandler);
 router.get("/trash", auth, getTrashHandler);
 router.get("/trash/records", auth, getTrashHandler);
+router.get("/trash/items", auth, getTrashHandler);
+
+router.post("/trash/restore", auth, async (req: any, res: any) => {
+  try {
+    const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Người dùng";
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : Array.isArray(req.body?.caseIds) ? req.body.caseIds : [];
+
+    if (!ids.length) {
+      return res.status(400).json({ success: false, error: "Danh sách ID cần khôi phục không hợp lệ." });
+    }
+
+    const results: any[] = [];
+    for (const id of ids) {
+      results.push(await TrashService.restore(String(id), userName));
+    }
+
+    res.json({ success: true, data: results, message: `Khôi phục ${ids.length} mục từ thùng rác thành công.` });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || "Không thể khôi phục mục từ thùng rác." });
+  }
+});
+
+router.delete("/trash/hard-delete", auth, async (req: any, res: any) => {
+  try {
+    const userRole = req.user?.role || req.session?.user?.role;
+    const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Quản trị viên";
+    const mappedRole = mapRoleToDb(userRole);
+    const p = db.prepare(`SELECT deleteRecords FROM role_permissions WHERE role=?`).get(mappedRole) as any;
+    const allowed = !!p?.deleteRecords || ["admin", "director", "deputyDirector", "controller"].includes(mappedRole);
+
+    if (!allowed) {
+      return res.status(403).json({ success: false, error: "Chỉ Quản trị viên, Ban Giám đốc hoặc Kiểm soát viên mới có quyền xóa vĩnh viễn dữ liệu." });
+    }
+
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : Array.isArray(req.body?.caseIds) ? req.body.caseIds : [];
+    if (!ids.length) {
+      return res.status(400).json({ success: false, error: "Danh sách ID cần xóa vĩnh viễn không hợp lệ." });
+    }
+
+    const failedIds: string[] = [];
+    for (const id of ids) {
+      const deleted = await TrashService.permanentDelete(String(id), userName);
+      if (!deleted) failedIds.push(String(id));
+    }
+
+    if (failedIds.length > 0) {
+      return res.status(409).json({
+        success: false,
+        error: `Không thể xác nhận xóa vĩnh viễn ${failedIds.length} mục trong thùng rác.`,
+        failedIds
+      });
+    }
+
+    res.json({ success: true, message: `Đã xóa vĩnh viễn thành công ${ids.length} mục.` });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || "Không thể xóa vĩnh viễn mục trong thùng rác." });
+  }
+});
+
+router.delete("/trash/empty", auth, async (req: any, res: any) => {
+  try {
+    const userRole = req.user?.role || req.session?.user?.role;
+    const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Quản trị viên";
+    const mappedRole = mapRoleToDb(userRole);
+    const p = db.prepare(`SELECT deleteRecords FROM role_permissions WHERE role=?`).get(mappedRole) as any;
+    const allowed = !!p?.deleteRecords || ["admin", "director", "deputyDirector", "controller"].includes(mappedRole);
+
+    if (!allowed) {
+      return res.status(403).json({ success: false, error: "Bạn không có quyền dọn sạch thùng rác hệ thống." });
+    }
+
+    const count = await TrashService.emptyTrash(userName);
+    res.json({ success: true, count, message: `Đã dọn sạch thùng rác. Tổng số mục đã xóa hoàn toàn: ${count}` });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || "Không thể dọn sạch thùng rác." });
+  }
+});
 
 const restoreCaseHandler = async (req: any, res: any) => {
   try {
@@ -725,7 +847,7 @@ const permanentDeleteCaseHandler = async (req: any, res: any) => {
     const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Quản trị viên";
     const mappedRole = mapRoleToDb(userRole);
     const p = db.prepare(`SELECT deleteRecords FROM role_permissions WHERE role=?`).get(mappedRole) as any;
-    const allowed = p?.deleteRecords || ["admin", "director", "deputyDirector", "controller"].includes(mappedRole) || true;
+    const allowed = !!p?.deleteRecords || ["admin", "director", "deputyDirector", "controller"].includes(mappedRole);
 
     if (!allowed) {
       return res.status(403).json({ error: "Chỉ Quản trị viên, Ban Giám đốc hoặc Kiểm soát viên mới có quyền xóa vĩnh viễn dữ liệu." });
@@ -786,6 +908,14 @@ router.delete("/trash/delete-permanent", auth, async (req: any, res: any) => {
 
 router.delete("/trash/empty-bin", auth, async (req: any, res: any) => {
   try {
+    const userRole = req.user?.role || req.session?.user?.role;
+    const mappedRole = mapRoleToDb(userRole);
+    const permissions = db.prepare(`SELECT deleteRecords FROM role_permissions WHERE role=?`).get(mappedRole) as any;
+    const allowed = !!permissions?.deleteRecords || ["admin", "director", "deputyDirector", "controller"].includes(mappedRole);
+    if (!allowed) {
+      return res.status(403).json({ success: false, error: "Chỉ Quản trị viên, Ban Giám đốc hoặc Kiểm soát viên mới có quyền dọn sạch thùng rác." });
+    }
+
     const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Quản trị viên";
     const count = await TrashService.emptyTrash(userName);
 
@@ -1093,8 +1223,8 @@ router.put("/notifications/read-all", auth, (req: any, res: any) => {
  */
 router.get("/cases/form-options", auth, (req: any, res: any) => {
   try {
-    const realBranches = db.prepare("SELECT id, name, address, phone FROM offices ORDER BY name ASC").all() as any[];
-    const realPersonnel = db.prepare("SELECT id, username, name, role, title, manager_id FROM users WHERE role != 'client' ORDER BY name ASC").all() as any[];
+    const realBranches = SharedDirectoryService.listOfficeFormOptions();
+    const realPersonnel = SharedDirectoryService.listPersonnelFormOptions();
 
     const formattedBranches = realBranches.map(b => ({
       value: b.id,
@@ -1291,10 +1421,10 @@ router.post("/cases/save-profile", auth, async (req: any, res: any) => {
     const generatedCode = `${prefix}-${currentYear}-${formattedSeq}`;
     const recordId = uuidv4();
 
-    const branchName = (db.prepare("SELECT name FROM offices WHERE id = ?").get(branchId) as any)?.name || "Chi nhánh Hà Nội";
-    const staffUser = db.prepare("SELECT name, username FROM users WHERE id = ?").get(staffId) as any;
+    const branchName = SharedDirectoryService.getOfficeName(branchId) || "Chi nhánh Hà Nội";
+    const staffUser = SharedDirectoryService.getUserSummary(staffId);
     const staffName = staffUser?.name || "Chưa phân công";
-    const managerUser = managerId ? db.prepare("SELECT name FROM users WHERE id = ?").get(managerId) as any : null;
+    const managerUser = managerId ? SharedDirectoryService.getUserSummary(managerId) : null;
     const managerName = managerUser?.name || "";
 
     // 1. Tạo bản ghi ERP trung tâm
@@ -1442,7 +1572,7 @@ router.get("/sync/looker-studio-analytics", (req: any, res: any) => {
     });
 
     // Group by branch
-    const offices = db.prepare("SELECT name FROM offices").all() as any[];
+    const offices = SharedDirectoryService.listOfficeNames();
     const branchStatsMap: Record<string, { total_cases: number; revenue: number }> = {};
     offices.forEach(off => {
       branchStatsMap[off.name] = { total_cases: 0, revenue: 0 };

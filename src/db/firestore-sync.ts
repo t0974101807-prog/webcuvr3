@@ -36,7 +36,6 @@ const TABLES_TO_SYNC = [
   "precedents",
   "testimonials",
   "messages",
-  "visitor_stats",
   "record_types",
   "erp_records",
   "legal_documents_history",
@@ -58,7 +57,6 @@ const TABLES_TO_SYNC = [
   "hr_attendance",
   "hr_leave_requests",
   "hr_payrolls",
-  "hr_performances",
   "hr_contracts",
   "hr_equipment",
   "hr_training",
@@ -90,12 +88,6 @@ const TABLES_TO_SYNC = [
   "gmail_accounts",
   "recycle_bin",
   
-  // Collaborative Chat Tables
-  "chat_channels",
-  "chat_channel_members",
-  "chat_messages",
-  "chat_reactions",
-
   // Isolated Domain Case Tables
   "litigation_cases",
   "consultation_cases",
@@ -147,10 +139,7 @@ export async function syncFromFirestore() {
             "compliance_cases",
             "arbitration_cases",
             "audit_logs",
-            "users",
-            "chat_channels",
-            "chat_channel_members",
-            "chat_messages"
+            "users"
           ];
           if (!skipDeleteTables.includes(tableName)) {
             targetDb.prepare(`DELETE FROM ${tableName}`).run();
@@ -220,7 +209,8 @@ export async function syncFromFirestore() {
           }
         }
       } catch (tableErr: any) {
-        if (tableErr.message?.includes("Quota limit exceeded") || tableErr.message?.includes("quota") || tableErr.message?.includes("Quota")) {
+        if (isQuotaError(tableErr)) {
+          firestoreQuotaBlocked = true;
           console.warn(`Firestore quota exceeded while syncing table "${tableName}". Reverting to local SQLite cache.`);
           break;
         } else {
@@ -230,7 +220,8 @@ export async function syncFromFirestore() {
     }
     console.log("=== FIRESTORE TO SQLITE SYNC COMPLETED SUCCESSFULLY ===");
   } catch (err: any) {
-    if (err.message?.includes("Quota") || err.message?.includes("quota")) {
+    if (isQuotaError(err)) {
+      firestoreQuotaBlocked = true;
       console.warn("Firestore quota exceeded during Firestore -> SQLite sync. Running on local SQLite engine.");
     } else {
       console.error("CRITICAL: Error during Firestore -> SQLite sync:", err.message);
@@ -244,6 +235,8 @@ export async function syncFromFirestore() {
  * Syncs a single record of a table to Firestore.
  */
 export async function syncToFirestore(tableName: string, id: string | number, data: any) {
+  if (tableName.startsWith("chat_")) return;
+  if (tableName === "system_performance_metrics" || firestoreQuotaBlocked) return;
   try {
     const docRef = doc(firestoreDb, tableName, String(id));
     const cleanedData: any = {};
@@ -311,6 +304,12 @@ export async function syncToFirestore(tableName: string, id: string | number, da
     await setDoc(docRef, cleanedData);
     console.log(`Successfully persisted ${tableName}/${id} to Firestore.`);
   } catch (err: any) {
+    if (isQuotaError(err)) {
+      firestoreQuotaBlocked = true;
+      queueFirestoreOperation(tableName, id, "upsert", data, err);
+      console.warn("[Firestore] Quota exhausted. Disabling further cloud writes for this process and continuing with local SQLite.");
+      return;
+    }
     console.error(`Error saving ${tableName}/${id} to Firestore:`, err.message);
   }
 }
@@ -319,6 +318,7 @@ export async function syncToFirestore(tableName: string, id: string | number, da
  * Syncs a row from SQLite to Firestore by fetching its latest state.
  */
 export async function syncRowToFirestore(tableName: string, id: string | number) {
+  if (tableName.startsWith("chat_")) return;
   try {
     const targetDb = getDbForTable(tableName);
     const row = targetDb.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(id) as any;
@@ -334,11 +334,19 @@ export async function syncRowToFirestore(tableName: string, id: string | number)
  * Deletes a record from Firestore.
  */
 export async function deleteFromFirestore(tableName: string, id: string | number) {
+  if (tableName.startsWith("chat_")) return;
+  if (firestoreQuotaBlocked) return;
   try {
     const docRef = doc(firestoreDb, tableName, String(id));
     await deleteDoc(docRef);
     console.log(`Successfully deleted ${tableName}/${id} from Firestore.`);
   } catch (err: any) {
+    if (isQuotaError(err)) {
+      firestoreQuotaBlocked = true;
+      queueFirestoreOperation(tableName, id, "delete", undefined, err);
+      console.warn("[Firestore] Quota exhausted. Disabling further cloud deletes for this process.");
+      return;
+    }
     console.error(`Error deleting ${tableName}/${id} from Firestore:`, err.message);
   }
 }
@@ -373,6 +381,52 @@ export async function clearAllFirestoreCollections() {
 }
 
 let activeListeners: (() => void)[] = [];
+let firestoreQuotaBlocked = false;
+
+const isQuotaError = (err: any) => {
+  const message = String(err?.message || err || "");
+  return /quota|resource.?exhausted|rate.?limit/i.test(message);
+};
+
+function queueFirestoreOperation(tableName: string, id: string | number, operation: "upsert" | "delete", payload?: any, error?: any) {
+  try {
+    db.prepare(`INSERT INTO firestore_sync_outbox (table_name, record_id, operation, payload, created_at, attempts, last_error)
+      VALUES (?, ?, ?, ?, ?, 0, ?)
+      ON CONFLICT(table_name, record_id) DO UPDATE SET operation = excluded.operation, payload = excluded.payload, last_error = excluded.last_error`)
+      .run(tableName, String(id), operation, payload === undefined ? null : JSON.stringify(payload), new Date().toISOString(), String(error?.message || error || "").slice(0, 500));
+  } catch (queueError: any) {
+    console.error(`[Firestore] Failed to queue ${operation} ${tableName}/${id}:`, queueError.message);
+  }
+}
+
+export async function flushFirestoreSyncOutbox(): Promise<number> {
+  if ((firestoreDb as any).isMock) return 0;
+  const pending = db.prepare("SELECT * FROM firestore_sync_outbox ORDER BY id ASC LIMIT 100").all() as any[];
+  let flushed = 0;
+  for (const item of pending) {
+    try {
+      const ref = doc(firestoreDb, item.table_name, String(item.record_id));
+      if (item.operation === "delete") await deleteDoc(ref);
+      else await setDoc(ref, JSON.parse(item.payload || "{}"));
+      db.prepare("DELETE FROM firestore_sync_outbox WHERE id = ?").run(item.id);
+      flushed++;
+    } catch (err: any) {
+      db.prepare("UPDATE firestore_sync_outbox SET attempts = attempts + 1, last_error = ? WHERE id = ?").run(String(err?.message || err).slice(0, 500), item.id);
+      if (isQuotaError(err)) {
+        firestoreQuotaBlocked = true;
+        break;
+      }
+    }
+  }
+  return flushed;
+}
+
+export async function retryFirestoreSync(): Promise<void> {
+  if ((firestoreDb as any).isMock) return;
+  firestoreQuotaBlocked = false;
+  await flushFirestoreSyncOutbox();
+  if (!firestoreQuotaBlocked) startRealTimeSync();
+}
 
 /**
  * Starts persistent, server-side onSnapshot real-time sync with Firestore.
@@ -380,6 +434,10 @@ let activeListeners: (() => void)[] = [];
 export function startRealTimeSync() {
   if ((firestoreDb as any).isMock) {
     console.log("[RealTimeSync] Firestore is in fallback mock mode. Real-time sync listener disabled.");
+    return;
+  }
+  if (firestoreQuotaBlocked) {
+    console.warn("[RealTimeSync] Firestore quota is exhausted. Cloud listeners remain disabled; local SQLite and Socket.IO stay active.");
     return;
   }
   
@@ -404,8 +462,7 @@ export function startRealTimeSync() {
     "payment_schedules",
     "payment_transactions",
     "court_schedule",
-    "voip_calls",
-    "chat_messages"
+    "voip_calls"
   ];
 
   for (const tableName of tablesToListen) {
@@ -462,7 +519,8 @@ export function startRealTimeSync() {
           }
         });
       }, (err) => {
-        if (err.message?.includes("Quota limit exceeded") || err.message?.includes("quota") || err.message?.includes("Quota")) {
+        if (isQuotaError(err)) {
+          firestoreQuotaBlocked = true;
           console.warn(`[RealTimeSync] Firestore quota exceeded for real-time listener on "${tableName}". Real-time updates paused.`);
         } else {
           console.error(`[RealTimeSync] Error in real-time listener for "${tableName}":`, err.message);

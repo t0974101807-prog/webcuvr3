@@ -180,31 +180,4 @@ export class SpecializedRecordsService {
     document.body.removeChild(link);
   }
 
-  /**
-   * Generate simulated Timeline events for a record to represent activity logging
-   */
-  public static getMockTimelineEvents(record: RecordItem) {
-    return [
-      {
-        id: "ev1",
-        titleVi: "Khởi tạo hồ sơ",
-        titleEn: "Dossier Created",
-        date: record.date || new Date().toLocaleDateString("vi-VN"),
-        descriptionVi: `Hồ sơ '${record.title}' được đăng ký trên hệ thống bởi nhân viên phụ trách ${record.mainAssignee || "hệ thống"}.`,
-        descriptionEn: `Dossier '${record.title}' registered by ${record.mainAssignee || "system"}.`,
-        badgeVi: "Hệ thống",
-        badgeEn: "System",
-      },
-      {
-        id: "ev2",
-        titleVi: "Phân loại chuyên môn",
-        titleEn: "Practice Area Classification",
-        date: record.date || new Date().toLocaleDateString("vi-VN"),
-        descriptionVi: `Phân hệ đã được gán tự động vào danh mục '${record.category}'.`,
-        descriptionEn: `Practice Area assigned to '${record.category}'.`,
-        badgeVi: "Tự động",
-        badgeEn: "Auto",
-      },
-    ];
-  }
 }

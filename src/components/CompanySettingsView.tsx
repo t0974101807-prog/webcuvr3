@@ -28,6 +28,7 @@ import {
   Eye,
   EyeOff
 } from "lucide-react";
+import { fetchApi } from "../utils/api";
 
 interface GmailCreatorViewProps {
   language: string;
@@ -56,7 +57,7 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
   
   // SMS Gateway config
   const [smsGateway, setSmsGateway] = useState<string>("5sim.net");
-  const [smsApiKey, setSmsApiKey] = useState<string>("5s_a78fb0cd2291ea3b889a7f01");
+  const [smsApiKey, setSmsApiKey] = useState<string>("");
   const [showApiKey, setShowApiKey] = useState<boolean>(false);
   const [smsCountry, setSmsCountry] = useState<string>("Vietnam (+84)");
   const [smsOperator, setSmsOperator] = useState<string>("any");
@@ -74,16 +75,8 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
   });
 
   // Proxy Configuration state
-  const [proxyInput, setProxyInput] = useState<string>(
-    "103.142.14.88:1080:anhduong_proxy:pass123\n194.28.112.44:8080:anhduong_proxy:pass123\n116.102.3.99:1080:anhduong_proxy:pass123\n45.124.95.12:3128\n103.82.20.144:80"
-  );
-  const [proxiesList, setProxiesList] = useState([
-    { ip: "103.142.14.88", port: "1080", region: "Hanoi, VN", type: "SOCKS5", ping: 38, status: "Active" },
-    { ip: "194.28.112.44", port: "8080", region: "Da Nang, VN", type: "HTTP", ping: 42, status: "Active" },
-    { ip: "116.102.3.99", port: "1080", region: "HCM, VN", type: "SOCKS5", ping: 120, status: "Active" },
-    { ip: "45.124.95.12", port: "3128", region: "Singapore", type: "HTTP", ping: 14, status: "Active" },
-    { ip: "103.82.20.144", port: "80", region: "Tokyo, JP", type: "HTTP", ping: 95, status: "Active" },
-  ]);
+  const [proxyInput, setProxyInput] = useState<string>("");
+  const [proxiesList, setProxiesList] = useState<any[]>([]);
   const [isCheckingProxies, setIsCheckingProxies] = useState(false);
 
   // Runner & Terminal Logger States
@@ -116,7 +109,7 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
   const fetchAccounts = async () => {
     setIsLoadingAccounts(true);
     try {
-      const res = await fetch("/api/system/gmail-accounts");
+      const res = await fetchApi("/api/system/gmail-accounts");
       const result = await res.json();
       if (result.success && result.data) {
         setAccounts(result.data);
@@ -171,14 +164,14 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
       let res;
       if (editingAccount) {
         // Edit mode
-        res = await fetch(`/api/system/gmail-accounts/${encodeURIComponent(formEmail)}`, {
+        res = await fetchApi(`/api/system/gmail-accounts/${encodeURIComponent(formEmail)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         });
       } else {
         // Add mode
-        res = await fetch("/api/system/gmail-accounts", {
+        res = await fetchApi("/api/system/gmail-accounts", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
@@ -203,7 +196,7 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
     }
 
     try {
-      const res = await fetch(`/api/system/gmail-accounts/${encodeURIComponent(email)}`, {
+      const res = await fetchApi(`/api/system/gmail-accounts/${encodeURIComponent(email)}`, {
         method: "DELETE"
       });
       if (res.ok) {
@@ -226,20 +219,16 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
 
   // Simulated proxy testing
   const handleTestProxies = () => {
-    setIsCheckingProxies(true);
-    setTerminalLogs(prev => [...prev, "🌐 [PROXY_ENGINE] Triggering batch connection latency test..."]);
-    
-    setTimeout(() => {
-      setProxiesList(prev =>
-        prev.map(p => ({
-          ...p,
-          ping: Math.floor(Math.random() * 80) + 10,
-          status: Math.random() > 0.15 ? "Active" : "Failed"
-        }))
-      );
-      setIsCheckingProxies(false);
-      setTerminalLogs(prev => [...prev, "🌐 [PROXY_ENGINE] Batch ping complete. Healthy relays synced!"]);
-    }, 1500);
+    const configured = proxyInput.split("\n").map(value => value.trim()).filter(Boolean);
+    if (configured.length === 0) {
+      setTerminalLogs(prev => [...prev, "🌐 [PROXY_ENGINE] Chưa có proxy được cấu hình."]);
+      return;
+    }
+    setProxiesList(configured.map((value, index) => {
+      const [host = "", port = ""] = value.split(":");
+      return { ip: host, port, region: "Chưa xác định", type: "Chưa xác định", ping: null, status: "Configured", index };
+    }));
+    setTerminalLogs(prev => [...prev, `🌐 [PROXY_ENGINE] Đã nạp ${configured.length} proxy từ cấu hình cục bộ. Chưa có dịch vụ kiểm tra kết nối thực tế.`]);
   };
 
   // Helper generator names
@@ -266,6 +255,13 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
   
   const startAutomation = () => {
     if (isRunning) return;
+    setTerminalLogs(prev => [
+      ...prev,
+      "⛔ [LAUNCHER] Không thể tự động đăng ký Gmail: backend chưa tích hợp API đăng ký chính thức.",
+      "ℹ️ Vui lòng dùng Thêm tài khoản để lưu tài khoản đã được tạo qua quy trình hợp lệ.",
+    ]);
+    return;
+    /*
     setIsRunning(true);
     setTerminalLogs(prev => [
       ...prev,
@@ -365,7 +361,7 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
           setAccounts(prev => [newAcc, ...prev]);
 
           // Save to server database
-          fetch("/api/system/gmail-accounts", {
+          fetchApi("/api/system/gmail-accounts", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(newAcc)
@@ -388,6 +384,7 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
     };
 
     intervalRef.current = setInterval(runNextStep, delay);
+    */
   };
 
   const stopAutomation = () => {
@@ -435,10 +432,9 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
               </span>
             </div>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-              {language === "vi" 
-                ? "Bảng điều khiển mô phỏng quy trình tạo tài khoản Google, vượt tường bảo mật bằng thiết bị ảo, proxy xoay vòng và OTP Gateway."
-                : "Stealth automation sandbox simulating isolated browser pools, multi-relay routing, and real-time OTP registration pipelines."
-              }
+              {language === "vi"
+                ? "Quản lý danh sách tài khoản Gmail đã được tạo hợp lệ và cấu hình kết nối do quản trị viên cung cấp."
+                : "Manage legitimately created Gmail accounts and administrator-provided connection settings."}
             </p>
           </div>
         </div>
@@ -447,15 +443,15 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-900/40 rounded-full">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-            <span className="text-[11px] font-medium text-emerald-700 dark:text-emerald-400">PROXY: ON (45 Active)</span>
+            <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">PROXY: {proxiesList.length > 0 ? `${proxiesList.length} configured` : "not configured"}</span>
           </div>
           <div className="flex items-center gap-1.5 px-3 py-1 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-900/40 rounded-full">
             <Activity size={12} className="text-indigo-500" />
-            <span className="text-[11px] font-medium text-indigo-700 dark:text-indigo-400">SMS GATEWAY: ACTIVE</span>
+            <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">SMS GATEWAY: {smsApiKey ? "configured" : "not configured"}</span>
           </div>
           <div className="flex items-center gap-1.5 px-3 py-1 bg-purple-50 dark:bg-purple-950/40 border border-purple-100 dark:border-purple-900/40 rounded-full">
             <Shield size={12} className="text-purple-500" />
-            <span className="text-[11px] font-medium text-purple-700 dark:text-purple-400">CLOAK: STEALTH ACTIVE</span>
+            <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">Automation: unavailable</span>
           </div>
         </div>
       </div>
@@ -485,7 +481,7 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
             <h3 className="text-3xl font-extrabold text-slate-800 dark:text-slate-100 mt-1 font-mono">
               {proxiesList.filter(p => p.status === "Active").length} / {proxiesList.length}
             </h3>
-            <p className="text-[11px] text-blue-500 mt-1 font-medium">⚡ Average Ping: 46ms</p>
+            <p className="text-[11px] text-slate-500 mt-1 font-medium">Chưa có kiểm tra kết nối thực tế</p>
           </div>
           <div className="p-3 bg-indigo-50 dark:bg-indigo-950/30 text-indigo-500 dark:text-indigo-400 rounded-xl">
             <Globe size={24} />
@@ -498,7 +494,7 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
               {language === "vi" ? "Số dư Cổng SMS" : "SMS OTP Balance"}
             </p>
             <h3 className="text-3xl font-extrabold text-emerald-600 dark:text-emerald-400 mt-1 font-mono">
-              $12.40
+              --
             </h3>
             <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-1">Provider: {smsGateway}</p>
           </div>
@@ -513,9 +509,9 @@ export default function CompanySettingsView({ language, isFullscreen = false }: 
               {language === "vi" ? "Tỷ lệ Đăng ký Thành công" : "Success Ratio"}
             </p>
             <h3 className="text-3xl font-extrabold text-indigo-600 dark:text-indigo-400 mt-1 font-mono">
-              94.2%
+              {accounts.length > 0 ? `${((accounts.filter(account => account.status === "Active").length / accounts.length) * 100).toFixed(1)}%` : "--"}
             </h3>
-            <p className="text-[11px] text-purple-500 mt-1 font-medium">🛡️ Zero Shadowban flags</p>
+            <p className="text-[11px] text-slate-500 mt-1 font-medium">Chưa có dữ liệu đăng ký</p>
           </div>
           <div className="p-3 bg-purple-50 dark:bg-purple-950/30 text-purple-500 dark:text-purple-400 rounded-xl">
             <Activity size={24} />

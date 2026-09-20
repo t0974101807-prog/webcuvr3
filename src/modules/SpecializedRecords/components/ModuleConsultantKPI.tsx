@@ -90,7 +90,7 @@ export default function ModuleConsultantKPI({ records, language, user }: ModuleC
   // Generate date-range data ending today
   const chartData = useMemo(() => {
     const dataPoints: any[] = [];
-    const today = new Date(2026, 7, 9); // Aug 9, 2026
+    const today = new Date();
 
     for (let i = daysFilter - 1; i >= 0; i--) {
       const d = new Date(today);
@@ -106,12 +106,6 @@ export default function ModuleConsultantKPI({ records, language, user }: ModuleC
       let rate = 0;
       if (activeUpToDate.length > 0) {
         rate = Math.round((completedUpToDate.length / activeUpToDate.length) * 100);
-      } else {
-        // Fallback smooth baseline trend if no records existed before this date
-        const baseRate = 65; 
-        const wave = Math.sin(i * 0.45) * 6; 
-        const noise = (i % 4 === 0 ? 2 : -2); 
-        rate = Math.min(100, Math.max(0, Math.round(baseRate + wave + noise)));
       }
 
       // Calculate previous period value (shift by daysFilter)
@@ -127,12 +121,6 @@ export default function ModuleConsultantKPI({ records, language, user }: ModuleC
       let prevRate = 0;
       if (prevActiveUpToDate.length > 0) {
         prevRate = Math.round((prevCompletedUpToDate.length / prevActiveUpToDate.length) * 100);
-      } else {
-        // Fallback baseline trend for previous period - offsetted and slightly lower
-        const baseRate = 60; 
-        const wave = Math.sin((i + daysFilter) * 0.35) * 5; 
-        const noise = ((i + daysFilter) % 3 === 0 ? 1 : -1); 
-        prevRate = Math.min(100, Math.max(0, Math.round(baseRate + wave + noise)));
       }
 
       const day = d.getDate().toString().padStart(2, "0");

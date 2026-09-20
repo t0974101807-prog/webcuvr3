@@ -3,40 +3,25 @@ service cloud.firestore {
   match /databases/{database}/documents {
     
     match /qr_records/{recordId} {
-      allow read, write: if true;
-    }
-
-    match /appointments/{appointmentId} {
-      allow read, write: if true;
+      allow read, write: if request.auth != null;
     }
 
     match /test/{testId} {
-      allow read, write: if true;
-    }
-
-    match /call_logs/{callLogId} {
-      allow read, write: if true;
+      allow read, write: if request.auth != null;
     }
 
     match /system_metrics/{metricId} {
-      allow read, write: if true;
-    }
-
-    match /qa_evaluations/{evaluationId} {
-      allow read, write: if true;
+      allow read, write: if request.auth != null;
     }
 
     match /audit_logs/{auditLogId} {
-      allow read, write: if true;
+      allow read, write: if request.auth != null;
     }
 
-    match /signed_documents/{docId} {
-      allow read, write: if true;
-    }
-
-    // Also support other synced SQLite tables to ensure background replication does not fail
+    // Browser Firestore access remains restricted to authenticated Firebase sessions only.
+    // Server-side sync can keep using admin SDK without these client rules.
     match /{collectionName}/{docId} {
-      allow read, write: if collectionName in [
+      allow read, write: if request.auth != null && collectionName in [
         "employees", "clients", "cases", "splits", "payrolls", "monthly_payrolls", 
         "evaluations", "files", "case_text", "court_schedule", "tasks", "invoices", 
         "services", "legal_services", "team", "recruitment", 
@@ -48,7 +33,7 @@ service cloud.firestore {
         "subdivision_limits", "hr_departments", "hr_positions", "hr_shifts", 
         "hr_attendance", "hr_leave_requests", "hr_payrolls", "hr_performances", 
         "hr_contracts", "hr_equipment", "hr_training", "hr_recruitment", 
-        "hr_workflows", "hr_business_trips", "hr_overtimes", "signed_documents",
+        "hr_workflows", "hr_business_trips", "hr_overtimes",
         "land_documents", "settings", "ai_providers", "ai_models", "ai_logs", 
         "payments", "payment_schedules", "payment_transactions", "payment_events", 
         "receipts", "case_qr_tokens", "qc_rules", "qc_records", "finance_transactions", 

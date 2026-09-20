@@ -28,10 +28,10 @@ import GlobalAIAssistant from './components/GlobalAIAssistant';
 import BottomLeftContacts from './components/BottomLeftContacts';
 import { useApp } from './context/AppContext';
 
-// Import heavy components statically for instant route transitions
-import AdminDashboard from './components/AdminDashboard';
-import ERP from './components/ERP';
-import ClientPortal from './components/ClientPortal';
+// Load authenticated workspaces only when their route is opened.
+const AdminDashboard = lazy(() => import('./components/AdminDashboard'));
+const ERP = lazy(() => import('./components/ERP'));
+const ClientPortal = lazy(() => import('./components/ClientPortal'));
 
 const LoadingSpinner = () => (
   <div className="flex items-center justify-center min-h-screen bg-slate-50">
@@ -61,10 +61,13 @@ function App() {
 
     const handleRoute = () => {
       const path = window.location.pathname;
-      if (path.startsWith('/qr/')) {
+      if (path.startsWith('/qr/') || path.startsWith('/case-qr/')) {
         setView('qr');
         setQrId(path.split('/')[2]);
-      } else if (path.startsWith('/admin')) {
+      } else if (path.startsWith('/cms') || path.startsWith('/quan-tri-noi-dung') || path.startsWith('/admin')) {
+        if (path.startsWith('/admin')) {
+          window.history.replaceState({}, '', '/cms');
+        }
         setView('admin');
       } else if (path.startsWith('/erp')) {
         setView('erp');
@@ -95,9 +98,17 @@ function App() {
   const handleLoginSuccess = (u: any) => {
     setCurrentUser(u);
     setShowLogin(false);
-    if (u.role === 'client') {
+    const role = String(u?.role || '').toLowerCase();
+    const isAdminRole = ['admin', 'director', 'deputydirector', 'deputy_director', 'controller', 'manager', 'head_of_department'].includes(role) || String(u?.username || '').toLowerCase() === 'admin';
+
+    const accountType = String(u?.account_type || u?.accountType || '').toUpperCase();
+    const isExternalUser = accountType === 'CUSTOMER' || accountType === 'PARTNER' || ['client', 'customer', 'partner'].includes(role);
+    if (isExternalUser) {
       setView('client_portal');
       window.history.pushState({}, '', '/client-portal');
+    } else if (isAdminRole) {
+      setView('admin');
+      window.history.pushState({}, '', '/cms');
     } else {
       setView('erp');
       window.history.pushState({}, '', '/erp');
@@ -212,7 +223,7 @@ function App() {
           user={currentUser}
           onLoginClick={() => setShowLogin(true)}
           onLogout={handleLogout}
-          onDashboardClick={() => { setView('admin'); window.history.pushState({}, '', '/admin'); }}
+          onDashboardClick={() => { setView('admin'); window.history.pushState({}, '', '/cms'); }}
           onWorkClick={() => { setView('erp'); window.history.pushState({}, '', '/erp'); }}
           onClientPortalClick={() => { setView('client_portal'); window.history.pushState({}, '', '/client-portal'); }}
           onChangePasswordClick={() => setShowChangePassword(true)}

@@ -6,6 +6,7 @@ import {
   Wallet, Users, FileSpreadsheet, Plus, HelpCircle, Landmark
 } from "lucide-react";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell } from "recharts";
+import { fetchApi } from "../utils/api";
 
 interface FinanceManagementViewProps {
   language: "vi" | "en";
@@ -59,39 +60,39 @@ export default function FinanceManagementView({
   // Fetch all finances
   const fetchData = async () => {
     try {
-      const txRes = await fetch("/api/finance/transactions");
+      const txRes = await fetchApi("/api/finance/transactions");
       const txData = await txRes.json();
       if (txData.success) setTransactions(txData.data);
 
-      const adRes = await fetch("/api/finance/assets-debts");
+      const adRes = await fetchApi("/api/finance/assets-debts");
       const adData = await adRes.json();
       if (adData.success) {
         setAssets(adData.data.assets);
         setDebts(adData.data.debts);
       }
 
-      const taxRes = await fetch("/api/finance/tax-reports");
+      const taxRes = await fetchApi("/api/finance/tax-reports");
       const taxData = await taxRes.json();
       if (taxData.success) setTaxReports(taxData.data);
 
-      const budRes = await fetch("/api/finance/budget-plans");
+      const budRes = await fetchApi("/api/finance/budget-plans");
       const budData = await budRes.json();
       if (budData.success) setBudgetPlans(budData.data);
 
-      const salRes = await fetch("/api/finance/salary-orders");
+      const salRes = await fetchApi("/api/finance/salary-orders");
       const salData = await salRes.json();
       if (salData.success) setSalaryOrders(salData.data);
 
-      const perfRes = await fetch("/api/finance/performance");
+      const perfRes = await fetchApi("/api/finance/performance");
       const perfData = await perfRes.json();
       if (perfData.success) setPerformance(perfData.data);
 
-      const commRes = await fetch("/api/finance/staff-commissions");
+      const commRes = await fetchApi("/api/finance/staff-commissions");
       const commData = await commRes.json();
       if (commData.success) setStaffCommissions(commData.data);
 
       // Also load existing calculated payrolls from system
-      const prRes = await fetch("/api/monthly-payrolls");
+      const prRes = await fetchApi("/api/monthly-payrolls");
       const prData = await prRes.json();
       if (Array.isArray(prData)) {
         setPayrolls(prData);
@@ -122,7 +123,7 @@ export default function FinanceManagementView({
       return;
     }
     try {
-      const res = await fetch("/api/finance/transactions", {
+      const res = await fetchApi("/api/finance/transactions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(txForm),
@@ -148,7 +149,7 @@ export default function FinanceManagementView({
   const handleApproveTx = async (id: number, action: "approve" | "reject") => {
     if (!confirm(language === "vi" ? "Xác nhận duyệt lệnh chi này?" : "Confirm approval/rejection of this expenditure?")) return;
     try {
-      const res = await fetch("/api/finance/transactions/approve", {
+      const res = await fetchApi("/api/finance/transactions/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, action }),
@@ -167,7 +168,7 @@ export default function FinanceManagementView({
   const handleCreateAsset = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch("/api/finance/assets", {
+      const res = await fetchApi("/api/finance/assets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(assetForm),
@@ -183,7 +184,7 @@ export default function FinanceManagementView({
   const handleCreateDebt = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch("/api/finance/debts", {
+      const res = await fetchApi("/api/finance/debts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(debtForm),
@@ -199,7 +200,7 @@ export default function FinanceManagementView({
   const handleCreateTax = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch("/api/finance/tax-reports", {
+      const res = await fetchApi("/api/finance/tax-reports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(taxForm),
@@ -215,7 +216,7 @@ export default function FinanceManagementView({
   const handleCreateBudget = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch("/api/finance/budget-plans", {
+      const res = await fetchApi("/api/finance/budget-plans", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(budgetForm),
@@ -247,7 +248,7 @@ export default function FinanceManagementView({
     const total = matchingPayrolls.reduce((sum, p) => sum + (Number(p.netSalary) || 0), 0);
 
     try {
-      const res = await fetch("/api/finance/salary-orders", {
+      const res = await fetchApi("/api/finance/salary-orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -278,7 +279,7 @@ export default function FinanceManagementView({
   const handleApproveSalaryOrder = async (id: number) => {
     if (!confirm(language === "vi" ? "Phê duyệt lệnh chi lương này?" : "Approve this payroll order?")) return;
     try {
-      const res = await fetch("/api/finance/salary-orders/approve", {
+      const res = await fetchApi("/api/finance/salary-orders/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
@@ -290,15 +291,15 @@ export default function FinanceManagementView({
   };
 
   const handlePaySalaryOrder = async (id: number) => {
-    if (!confirm(language === "vi" ? "Xác nhận thực hiện chuyển tiền tự động từ tài khoản ngân hàng liên kết để chi lương?" : "Perform direct bank transfer simulation to pay salaries?")) return;
+    if (!confirm(language === "vi" ? "Xác nhận ghi nhận lệnh chi lương đã được thực hiện? Hệ thống hiện chỉ cập nhật sổ quỹ nội bộ, chưa tự chuyển tiền qua ngân hàng bên ngoài." : "Confirm recording this payroll payout? The system updates the internal ledger; no external bank transfer is connected yet.")) return;
     try {
-      const res = await fetch("/api/finance/salary-orders/pay", {
+      const res = await fetchApi("/api/finance/salary-orders/pay", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
       });
       if (res.ok) {
-        alert(language === "vi" ? "Đã thực hiện chi tiền lương tự động thành công qua ngân hàng số liên kết!" : "Automatic salary payout triggered successfully via linked bank account!");
+        alert(language === "vi" ? "Đã ghi nhận chi lương vào sổ quỹ nội bộ." : "Payroll payout recorded in the internal ledger.");
         fetchData();
       }
     } catch (err) {}
@@ -307,7 +308,7 @@ export default function FinanceManagementView({
   // Customize commission percentage rates
   const handleUpdateCommissionConfig = async (userId: number) => {
     try {
-      const res = await fetch("/api/finance/config", {
+      const res = await fetchApi("/api/finance/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

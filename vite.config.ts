@@ -20,6 +20,18 @@ export default defineConfig(({ mode }) => {
           '@': path.resolve(__dirname, '.'),
         },
         dedupe: ['firebase', '@firebase/app', '@firebase/firestore', '@firebase/auth', '@firebase/component']
+      },
+      build: {
+        rollupOptions: {
+          output: {
+            manualChunks(id) {
+              if (!id.includes('node_modules')) return;
+              if (id.includes('recharts')) return 'vendor-charts';
+              if (id.includes('firebase') || id.includes('@firebase')) return 'vendor-firebase';
+              if (id.includes('xlsx') || id.includes('jspdf') || id.includes('pdf-lib') || id.includes('html2canvas')) return 'vendor-documents';
+            }
+          }
+        }
       }
     };
 });

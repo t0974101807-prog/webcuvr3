@@ -1,6 +1,7 @@
 import db from "../../db/database";
 import { paymentService } from "./payment.service";
 import { paymentRepository } from "./payment.repository";
+import { SystemDataAccess } from "../../system/data-access/SystemDataAccess";
 
 export interface FinancialSummaryReport {
   totalContractValue: number;
@@ -18,10 +19,9 @@ export class FinancialReportEngine {
   public getSummaryReport(): FinancialSummaryReport {
     try {
       // 1. Synchronize all ERP cases into Payments at runtime to ensure REAL DATA is always populated
-      const erpRows = db.prepare("SELECT * FROM erp_records").all() as any[];
-      erpRows.forEach(row => {
+      const erpRows = SystemDataAccess.getAllRecords();
+      erpRows.forEach(parsed => {
         try {
-          const parsed = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
           if (parsed && parsed.id) {
             const caseId = parsed.id;
             const existingPayment = db.prepare("SELECT * FROM payments WHERE case_id = ?").get(caseId) as any;

@@ -1,4 +1,4 @@
-import { RecordItem } from "../SpecializedRecords/repository/SpecializedRecordsRepository";
+import type { RecordItem } from "../../domain/shared";
 
 export interface RepresentationCase extends RecordItem {
   negotiationParties?: string;

@@ -256,14 +256,14 @@ export class TrashService {
     fallbackData?: any
   ): Promise<any> {
     const stringId = String(id).trim();
-    console.log(`[TRASH DEBUG] softDelete called for ID: ${stringId}, performedBy: ${performedBy}, reason: ${reason}`);
+      console.log(`[TRASH DEBUG] softDelete called for ID: ${stringId}, performedBy: ${performedBy}, reason: ${reason}`);
     let originalData: any = null;
 
     // 1. Check existing record in erp_records by exact ID
     const existingRecord = SystemDataAccess.getRecordById(stringId);
     if (existingRecord) {
       originalData = existingRecord;
-      console.log("[TRASH DEBUG] Found record in specialized/domain repositories:", existingRecord.id);
+        console.log("[TRASH DEBUG] Found record in specialized/domain repositories:", existingRecord.id);
     }
 
     // 1b. If not found by exact ID, search erp_records by parsing JSON
@@ -279,7 +279,7 @@ export class TrashService {
               String((parsed as any).authContractId) === stringId
             ) {
               originalData = parsed;
-              console.log("[TRASH DEBUG] Found matching record by alias scan:", parsed.id);
+                console.log("[TRASH DEBUG] Found matching record by alias scan:", parsed.id);
               break;
             }
           } catch (e) {}
@@ -290,7 +290,7 @@ export class TrashService {
     // 2. Check fallbackData if provided
     if (!originalData && fallbackData) {
       originalData = { ...fallbackData };
-      console.log("[TRASH DEBUG] Using fallbackData as originalData source");
+        console.log("[TRASH DEBUG] Using fallbackData as originalData source");
     }
 
     // 3b. Check cases table if exists
@@ -307,7 +307,7 @@ export class TrashService {
             status: "Đang xử lý",
             date: new Date().toLocaleDateString("vi-VN")
           };
-          console.log("[TRASH DEBUG] Synthesized originalData from cases table:", stringId);
+            console.log("[TRASH DEBUG] Synthesized originalData from cases table:", stringId);
         }
       } catch (caseQueryErr) {}
     }
@@ -322,12 +322,12 @@ export class TrashService {
         status: "Đang xử lý",
         date: new Date().toLocaleDateString("vi-VN")
       };
-      console.log("[TRASH DEBUG] Created default fallback originalData structure");
+        console.log("[TRASH DEBUG] Created default fallback originalData structure");
     }
 
     // Determine resolved masterId with strict priority (HS-E2E-001 over HD001/UQ001)
     const resolvedMasterId = this.resolveMasterId(originalData, stringId);
-    console.log(`[TRASH DEBUG] Resolved masterId: ${resolvedMasterId}`);
+      console.log(`[TRASH DEBUG] Resolved masterId: ${resolvedMasterId}`);
 
     // Collect all alias IDs associated with this record
     const aliasIds = Array.from(
@@ -427,7 +427,7 @@ export class TrashService {
     };
 
     const dataJson = JSON.stringify(trashedData);
-    console.log("[TRASH DEBUG] List of associated alias IDs to mark as soft-deleted:", aliasIds);
+      console.log("[TRASH DEBUG] List of associated alias IDs to mark as soft-deleted:", aliasIds);
 
     // ATOMIC TRANSACTION: (1) read record (done), (2) identify masterId (done), (3) insert recycle_bin, (4) update cases, (5) update related data
     const softDeleteTx = db.transaction(() => {
@@ -481,7 +481,7 @@ export class TrashService {
             SET is_deleted = 1, deleted_at = ?, deleted_by = ?, delete_reason = ?, domain_type = ?, domain_name = ?
             WHERE id = ?
           `).run(now, performedBy, reason, domainType, domainName, aId);
-          console.log(`[TRASH DEBUG] Updated is_deleted=1 in cases table for ID: ${aId}`);
+            console.log(`[TRASH DEBUG] Updated is_deleted=1 in cases table for ID: ${aId}`);
         } else if (aId === resolvedMasterId) {
           db.prepare(`
             INSERT INTO cases (id, name, client, fee, is_deleted, deleted_at, deleted_by, delete_reason, domain_type, domain_name)
@@ -497,7 +497,7 @@ export class TrashService {
             domainType,
             domainName
           );
-          console.log(`[TRASH DEBUG] Inserted soft-deleted record in cases table for ID: ${resolvedMasterId}`);
+            console.log(`[TRASH DEBUG] Inserted soft-deleted record in cases table for ID: ${resolvedMasterId}`);
         }
 
         // TỰ ĐỘNG DỌN DẸP FILE ĐÍNH KÈM VẬT LÝ VÀ CHUYỂN TRẠNG THÁI TÀI LIỆU SANG XÓA MỀM (DOCUMENT Subsystem Cleanup)
@@ -512,7 +512,7 @@ export class TrashService {
               if (fs.existsSync(absPath)) {
                 try {
                   fs.unlinkSync(absPath);
-                  console.log(`[AI Document Cleanup] Deleted physical document from legal_documents: ${absPath}`);
+                    console.log(`[AI Document Cleanup] Deleted physical document from legal_documents: ${absPath}`);
                 } catch (unlinkErr) {}
               }
             }
@@ -527,7 +527,7 @@ export class TrashService {
               if (fs.existsSync(absPath)) {
                 try {
                   fs.unlinkSync(absPath);
-                  console.log(`[AI Document Cleanup] Deleted physical file from files: ${absPath}`);
+                    console.log(`[AI Document Cleanup] Deleted physical file from files: ${absPath}`);
                 } catch (unlinkErr) {}
               }
             }
@@ -542,7 +542,7 @@ export class TrashService {
 
     try {
       softDeleteTx();
-      console.log(`[TRASH DEBUG] Soft delete transaction committed successfully for ${resolvedMasterId}`);
+        console.log(`[TRASH DEBUG] Soft delete transaction committed successfully for ${resolvedMasterId}`);
     } catch (txErr) {
       console.error("[TRASH DEBUG] Soft delete transaction failed, rolled back:", txErr);
       throw txErr;
@@ -572,7 +572,7 @@ export class TrashService {
       details: { title: trashedData.title, client: trashedData.client, previousStatus, aliasIds }
     });
 
-    console.log(`[TRASH DEBUG] softDelete process completed successfully for ID: ${stringId}`);
+      console.log(`[TRASH DEBUG] softDelete process completed successfully for ID: ${stringId}`);
     return trashedData;
   }
 
@@ -943,12 +943,32 @@ export class TrashService {
    * Permanent Delete (Recycle Bin / TRASHED -> PERMANENTLY_DELETED)
    */
   static async permanentDelete(id: string, performedBy: string): Promise<boolean> {
-    const stringId = String(id).trim();
+    let stringId = String(id).trim();
     console.log(`[TRASH DEBUG] permanentDelete called for ID: ${stringId}, performedBy: ${performedBy}`);
     const now = new Date().toISOString();
 
     // Check if it's a file or channel
-    const binRow = db.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(stringId) as any;
+    let binRow = db.prepare("SELECT * FROM recycle_bin WHERE id = ? OR master_id = ?").get(stringId, stringId) as any;
+    if (!binRow) {
+      const candidates = new Set<string>([stringId]);
+      if (stringId.startsWith("HS-")) {
+        candidates.add(stringId.slice(3));
+        candidates.add(`HS${stringId.slice(3)}`);
+      } else if (stringId.startsWith("HS")) {
+        candidates.add(stringId.slice(2).replace(/^[-]/, ""));
+        candidates.add(`HS-${stringId.slice(2).replace(/^[-]/, "")}`);
+      } else {
+        candidates.add(`HS-${stringId}`);
+        candidates.add(`HS${stringId}`);
+      }
+      for (const candidate of candidates) {
+        binRow = db.prepare("SELECT * FROM recycle_bin WHERE id = ? OR master_id = ?").get(candidate, candidate) as any;
+        if (binRow) {
+          stringId = String(binRow.id);
+          break;
+        }
+      }
+    }
 
     if (binRow && binRow.original_table === "chat_channels") {
       let chanData: any = {};
@@ -1235,14 +1255,58 @@ export class TrashService {
    * Empty / purge all items in the recycle bin
    */
   static async emptyTrash(performedBy: string = "Quản trị viên") {
-    await this.syncAndBackfillTrash();
-    const allBins = db.prepare("SELECT id FROM recycle_bin").all() as any[];
-    let count = 0;
+    const allBins = db.prepare("SELECT id, master_id, masterId, systemId, data FROM recycle_bin").all() as any[];
+    const ids = new Set<string>();
+
     for (const item of allBins) {
-      await this.permanentDelete(String(item.id), performedBy);
-      count++;
+      for (const value of [item.id, item.master_id, item.masterId, item.systemId]) {
+        if (value) ids.add(String(value));
+      }
+      try {
+        const data = typeof item.data === "string" ? JSON.parse(item.data) : item.data;
+        for (const value of [data?.id, data?.masterId, data?.systemId, data?.contractId, data?.authContractId]) {
+          if (value) ids.add(String(value));
+        }
+      } catch {}
     }
-    return count;
+
+    const deletedCases = db.prepare("SELECT id FROM cases WHERE is_deleted = 1").all() as any[];
+    deletedCases.forEach((row) => ids.add(String(row.id)));
+    const deletedRecords = db.prepare("SELECT id FROM erp_records WHERE json_extract(data, '$.deleted') IN (1, true) OR json_extract(data, '$.is_deleted') IN (1, true) OR json_extract(data, '$.status') = 'TRASHED'").all() as any[];
+    deletedRecords.forEach((row) => ids.add(String(row.id)));
+
+    for (const id of ids) {
+      SystemDataAccess.deleteRecord(id);
+      db.prepare("DELETE FROM cases WHERE id = ?").run(id);
+      db.prepare("DELETE FROM files WHERE case_id = ?").run(id);
+      db.prepare("DELETE FROM court_schedule WHERE case_id = ?").run(id);
+      db.prepare("DELETE FROM recycle_bin WHERE id = ? OR master_id = ? OR masterId = ? OR systemId = ?").run(id, id, id, id);
+      try {
+        const sourceData = typeof item.data === "string" ? JSON.parse(item.data) : item.data;
+        const domain = mapCategoryToDomain(sourceData?.category || sourceData?.practice_area);
+        await deleteFromFirestore("recycle_bin", id);
+        await deleteFromFirestore("erp_records", id);
+        await deleteFromFirestore("cases", id);
+        await deleteFromFirestore(`${domain}_cases`, id);
+      } catch (syncError) {
+        console.error("[TrashService] Failed to remove purged item from Firestore:", id, syncError);
+      }
+    }
+
+    const remaining = db.prepare("SELECT COUNT(*) AS count FROM recycle_bin").get() as { count: number };
+    db.prepare("DELETE FROM recycle_bin").run();
+    this.io?.emit("recycle_bin_updated", { action: "empty_all" });
+    this.logAudit({
+      action: "EMPTY_RECYCLE_BIN",
+      entityType: "recycle_bin",
+      entityId: "all",
+      performedBy,
+      performedAt: new Date().toISOString(),
+      reason: "Dọn sạch toàn bộ thùng rác hệ thống",
+      result: "SUCCESS",
+      details: { deletedIds: Array.from(ids), remainingBeforeCleanup: remaining.count }
+    });
+    return allBins.length;
   }
 
   /**
@@ -1254,9 +1318,6 @@ export class TrashService {
 
     // 2. Fetch all records from recycle_bin table
     const binRows = db.prepare("SELECT * FROM recycle_bin ORDER BY deleted_at DESC").all() as any[];
-    console.log("[TrashService] Raw recycle_bin rows from DB:", binRows);
-    console.log("recycleBinRows:", binRows);
-    console.log(`[TRASH DEBUG] recycleBinRows = ${binRows.length}`);
 
     const itemsMap = new Map<string, TrashItem>();
     const seenEntityKeys = new Set<string>();
@@ -1273,15 +1334,7 @@ export class TrashService {
         } else {
           const resolved = this.resolveMasterId(parsed, r.masterId || r.master_id || r.systemId || stringId);
           masterId = this.ensureHsPrefix(resolved, parsed);
-          console.log(
-            `[TrashService] Master ID Logic - Record ID: "${stringId}", Original Table: "${r.original_table}", ` +
-            `Raw System/Master: { systemId: "${parsed.systemId}", masterId: "${r.masterId || r.master_id || parsed.masterId}", contractId: "${parsed.contractId}", authContractId: "${parsed.authContractId}" }, ` +
-            `Resolved: "${resolved}", Canonical HS Master ID: "${masterId}"`
-          );
         }
-
-        console.log("masterId:", masterId);
-        console.log(`[TRASH DEBUG] masterId = ${masterId}`);
 
         if (seenEntityKeys.has(masterId)) continue;
         seenEntityKeys.add(masterId);
@@ -1306,14 +1359,8 @@ export class TrashService {
       for (const c of trashedCases) {
         const stringId = String(c.id);
         const masterId = this.ensureHsPrefix(stringId, c);
-        console.log(
-          `[TrashService] Master ID Logic (from cases table) - Case ID: "${stringId}", Enforced HS Master ID: "${masterId}"`
-        );
         if (seenEntityKeys.has(masterId)) continue;
         seenEntityKeys.add(masterId);
-
-        console.log("masterId:", masterId);
-        console.log(`[TRASH DEBUG] masterId = ${masterId}`);
 
         const caseData = {
           id: masterId,
@@ -1376,14 +1423,8 @@ export class TrashService {
       }
     } catch (chanErr) {}
 
-    console.log(`[TRASH DEBUG] groupedRows = ${itemsMap.size}`);
-
     let items = Array.from(itemsMap.values());
     items.sort((a, b) => new Date(b.deletedAt).getTime() - new Date(a.deletedAt).getTime());
-
-    // Log before search filtering
-    console.log("[TrashService] Items array BEFORE search filtering:", items);
-    console.log(`[TrashService] Items count BEFORE search filtering: ${items.length}`);
 
     if (searchQuery && searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
@@ -1394,14 +1435,7 @@ export class TrashService {
       );
     }
 
-    // Log after search filtering
-    console.log(`[TrashService] Items array AFTER search filtering (query: "${searchQuery}"):`, items);
-    console.log(`[TrashService] Items count AFTER search filtering: ${items.length}`);
-
-    // Final mapped array returned to UI
-    console.log("[TrashService] Final mapped array being returned to UI:", items);
-    console.log("finalRows:", items);
-    console.log(`[TRASH DEBUG] finalRows = ${items.length}`);
+    console.log(`[TrashService] Returning ${items.length} trash items`);
     return items;
   }
 }

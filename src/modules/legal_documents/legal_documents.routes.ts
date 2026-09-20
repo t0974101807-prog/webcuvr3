@@ -3,13 +3,13 @@ import db from "../../db/database";
 import { upload } from "../../middleware/upload";
 import { GoogleGenAI, Type } from "@google/genai";
 import mammoth from "mammoth";
-import { auth } from "../../middleware/auth";
+import { auth, requirePermission } from "../../middleware/auth";
 import { getResolvedAiProvider } from "../ai/ai.routes";
 import { encodeCursor, decodeCursor } from "../../utils/cursor";
 
 const router = express.Router();
 
-router.post("/legal_documents/parse-file", upload.single("file"), async (req, res) => {
+router.post("/legal_documents/parse-file", requirePermission("manageLegalDocs"), upload.single("file"), async (req, res) => {
   try {
     const file = req.file;
     if (!file) {
@@ -164,21 +164,21 @@ router.post("/legal_documents/parse-file", upload.single("file"), async (req, re
     }
 
     // 3. Fallback extraction if no Gemini key or Gemini failed
-    const defaultData = {
+    const extractedData = {
       title: filename.substring(0, filename.lastIndexOf(".")),
       refNumber: "",
-      type: fileExt === ".pdf" ? "Luật" : "Khác",
-      dateStr: new Date().toISOString().split("T")[0],
+      type: "",
+      dateStr: "",
       effectiveDateStr: "",
-      agency: "Quốc hội",
+      agency: "",
       signer: "",
-      category: "Dân sự",
-      status: "Còn hiệu lực",
+      category: "",
+      status: "",
       summary: `Tệp văn bản ${filename} được tải lên hệ thống.`,
       content: textContent || `[Nội dung từ tệp: ${filename}]`
     };
 
-    return res.json({ success: true, data: defaultData });
+    return res.json({ success: true, data: extractedData });
 
   } catch (error: any) {
     console.error("File parse route error:", error);
@@ -245,7 +245,7 @@ router.get("/legal_documents/history", auth, (req: any, res: any) => {
   }
 });
 
-router.post("/legal_documents", auth, (req: any, res: any) => {
+router.post("/legal_documents", requirePermission("manageLegalDocs"), (req: any, res: any) => {
   try {
     const { title, document_number, issue_date, effective_date, agency, signer, content, status, summary, category } = req.body;
     const created_at = new Date().toISOString();
@@ -276,7 +276,7 @@ router.post("/legal_documents", auth, (req: any, res: any) => {
   }
 });
 
-router.put("/legal_documents/:id", auth, (req: any, res: any) => {
+router.put("/legal_documents/:id", requirePermission("manageLegalDocs"), (req: any, res: any) => {
   try {
     const { title, document_number, issue_date, effective_date, agency, signer, content, status, summary, category } = req.body;
     const { id } = req.params;
@@ -310,7 +310,7 @@ router.put("/legal_documents/:id", auth, (req: any, res: any) => {
   }
 });
 
-router.delete("/legal_documents/:id", auth, (req: any, res: any) => {
+router.delete("/legal_documents/:id", requirePermission("manageLegalDocs"), (req: any, res: any) => {
   try {
     const { id } = req.params;
     

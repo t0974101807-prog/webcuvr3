@@ -3,8 +3,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Phone, Mail, MapPin, Send, Loader2, CheckCircle, Smartphone, ExternalLink } from 'lucide-react';
 import { fetchApi, navigateTo } from '../utils/api';
 import { useContactSettings } from '../hooks/useContactSettings';
-import { db } from '../firebase';
-import { collection, getDocs, addDoc } from 'firebase/firestore';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
@@ -79,70 +77,32 @@ export default function ContactTeaser() {
 
   useEffect(() => {
     const loadOffices = async () => {
-      let loaded = false;
-      // 1. Try Firestore direct collection load
       try {
-        const querySnap = await getDocs(collection(db, 'offices'));
-        if (!querySnap.empty) {
-          const fsData: any[] = [];
-          querySnap.forEach((doc) => {
-            const data = doc.data();
-            fsData.push({
-              id: doc.id,
-              name: data.name || data.title,
-              shortName: data.short_name || data.name || data.title,
-              address: data.address,
-              phone: data.phone || '1900 3330',
-              provinceName: data.provinceName || data.short_name || data.name,
-              googleMapsUrl: data.map_url || data.googleMapsUrl || '',
-              position: [data.latitude || 10.784206, data.longitude || 106.666993] as [number, number],
-              is_headquarters: data.is_headquarters
-            });
-          });
-          if (fsData.length > 0) {
-            setBranches(fsData);
-            const hq = fsData.find((o: any) => o.is_headquarters);
+        const response = await fetchApi('/api/offices');
+        if (response.ok) {
+          const data = await response.json();
+          if (Array.isArray(data) && data.length > 0) {
+            const mapped = data.map((o: any) => ({
+              id: o.id.toString(),
+              name: o.name,
+              shortName: o.short_name || o.name,
+              address: o.address,
+              phone: o.phone,
+              provinceName: o.short_name || o.name,
+              googleMapsUrl: o.map_url || '',
+              position: [o.latitude || 10.784206, o.longitude || 106.666993] as [number, number]
+            }));
+            setBranches(mapped);
+            const hq = data.find((o: any) => o.is_headquarters);
             if (hq) {
               setActiveBranchId(hq.id.toString());
             } else {
-              setActiveBranchId(fsData[0].id.toString());
+              setActiveBranchId(mapped[0].id);
             }
-            loaded = true;
           }
         }
       } catch (err) {
-        console.warn("Firestore offices fetch attempt:", err);
-      }
-
-      if (!loaded) {
-        // 2. Fallback / complement with backend API
-        try {
-          const response = await fetchApi('/api/offices');
-          if (response.ok) {
-            const data = await response.json();
-            if (Array.isArray(data) && data.length > 0) {
-              const mapped = data.map((o: any) => ({
-                id: o.id.toString(),
-                name: o.name,
-                shortName: o.short_name || o.name,
-                address: o.address,
-                phone: o.phone,
-                provinceName: o.short_name || o.name,
-                googleMapsUrl: o.map_url || '',
-                position: [o.latitude || 10.784206, o.longitude || 106.666993] as [number, number]
-              }));
-              setBranches(mapped);
-              const hq = data.find((o: any) => o.is_headquarters);
-              if (hq) {
-                setActiveBranchId(hq.id.toString());
-              } else {
-                setActiveBranchId(mapped[0].id);
-              }
-            }
-          }
-        } catch (err) {
-          console.error("Error loading offices in teaser:", err);
-        }
+        console.error("Error loading offices in teaser:", err);
       }
     };
     loadOffices();
@@ -270,18 +230,6 @@ export default function ContactTeaser() {
         file_url: null,
         file_name: null
       };
-
-      // Sync to Firestore directly
-      try {
-        await addDoc(collection(db, 'messages'), {
-          ...payload,
-          created_at: new Date().toISOString(),
-          is_read: 0,
-          source: 'contact_teaser'
-        });
-      } catch (fsErr) {
-        console.warn('Direct Firestore message add error:', fsErr);
-      }
 
       const response = await fetchApi('/api/messages', {
         method: 'POST',

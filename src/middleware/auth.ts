@@ -4,6 +4,7 @@ import { config } from "../config/env";
 import db from "../db/database";
 
 import { mapRoleToDb } from "../utils/role";
+import { SystemDataAccess } from "../system/data-access/SystemDataAccess";
 
 export function auth(req: any, res: any, next: NextFunction) {
   const authHeader = req.headers.authorization;
@@ -26,16 +27,7 @@ export function auth(req: any, res: any, next: NextFunction) {
     return next();
   }
 
-  // Allow development / test environments and explicit test requests to proceed seamlessly
-  if (config.NODE_ENV !== 'production' || req.headers['x-bypass-auth'] === 'true' || req.headers['user-agent']?.includes('curl')) {
-    const defaultUser = { id: 1, username: "admin", role: "admin", name: "Quản trị viên" };
-    req.session = req.session || {};
-    req.session.user = defaultUser;
-    req.user = defaultUser;
-    return next();
-  }
-
-  // Reject unauthenticated requests
+  // Reject unauthenticated requests. No fake admin, no dev bypass, no curl bypass.
   return res.status(401).json({ error: "Xác thực không hợp lệ hoặc chưa đăng nhập", success: false });
 }
 
@@ -59,6 +51,17 @@ export function requireAdmin(req: any, res: any, next: NextFunction) {
   });
 }
 
+export function requireRoles(...allowedRoles: string[]) {
+  return (req: any, res: any, next: NextFunction) => {
+    auth(req, res, () => {
+      const mappedRole = mapRoleToDb(req.user?.role || req.session?.user?.role);
+      const normalizedAllowed = allowedRoles.map((role) => mapRoleToDb(role));
+      if (normalizedAllowed.includes(mappedRole) || mappedRole === "admin") return next();
+      return res.status(403).json({ error: "permission denied" });
+    });
+  };
+}
+
 export function requirePermission(permissionKey: string) {
   return (req: any, res: any, next: NextFunction) => {
     auth(req, res, () => {
@@ -66,7 +69,7 @@ export function requirePermission(permissionKey: string) {
           return res.status(401).json({ error: "login required" });
       }
       
-      const role = req.session.user.role;
+      const role = req.user?.role || req.session.user.role;
       const mappedRole = mapRoleToDb(role);
       if (mappedRole === 'admin' || mappedRole === 'director' || mappedRole === 'deputyDirector') {
          return next(); // Admins, directors, and deputy directors always have all permissions
@@ -134,15 +137,21 @@ export function checkResourceAccess(user: any, resourceType: string, resourceId:
   if (dataScope === 'ALL') return true;
   
   if (resourceType === 'case' || resourceType === 'record' || resourceType === 'chat') {
-    const record = db.prepare('SELECT * FROM erp_records WHERE id = ?').get(resourceId) as any;
+    const record = SystemDataAccess.getRecordById(resourceId) ?? (() => {
+      try {
+        const legacyRow = db.prepare('SELECT * FROM erp_records WHERE id = ?').get(resourceId) as any;
+        if (!legacyRow) return null;
+        return typeof legacyRow.data === 'string' ? JSON.parse(legacyRow.data) : legacyRow.data;
+      } catch (e) {
+        return null;
+      }
+    })();
+
     if (!record) {
       return true;
     }
     
-    let recordData: any = {};
-    try {
-      recordData = typeof record.data === 'string' ? JSON.parse(record.data) : record.data;
-    } catch(e) {}
+    const recordData: any = record && typeof record === 'object' && 'data' in record ? ((record as any).data || record) : record;
 
     if (accountType === 'CUSTOMER') {
       const isClient = user.case_id === resourceId || recordData.client === user.name || recordData.clientIdCard === user.username;

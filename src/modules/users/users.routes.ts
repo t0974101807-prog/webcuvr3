@@ -11,6 +11,7 @@ import { syncRowToFirestore, deleteFromFirestore } from "../../db/firestore-sync
 import { encodeCursor, decodeCursor } from "../../utils/cursor";
 import { normalizeBranchName } from "../../utils/branch";
 import { SharedDirectoryService } from "../../application/services/sharedDirectory.service";
+import type { UserAccount, Personnel } from "../../domain/shared";
 
 const router = Router();
 const canManageUsers = requirePermission("manageUsers");
@@ -77,8 +78,6 @@ router.get("/employees", auth, (req: any, res: any) => {
 });
 
 /* USERS */
-const userDirectoryFields = `id, username, name, role, title, staff_code, branch, start_date, contract_type, contract_sign_date, salary, bonus, avatar, phone, email, dob, gender, address, case_id, manager_id, practice_areas`;
-
 router.get("/users/employees", auth, (req: any, res: any) => {
   try {
     const employees = SharedDirectoryService.listPersonnel({
@@ -92,16 +91,7 @@ router.get("/users/employees", auth, (req: any, res: any) => {
 
 router.get("/users/admins", canManageUsers, (req: any, res: any) => {
   try {
-    const admins = db.prepare(`
-      SELECT ${userDirectoryFields}
-      FROM users
-      WHERE role = 'admin' OR username = 'admin'
-      ORDER BY id ASC
-    `).all();
-    res.json(enrichUsersWithStaffCode(admins).map((admin: any) => ({
-      ...admin,
-      branch: normalizeBranchName(admin.branch)
-    })));
+    res.json(SharedDirectoryService.listAdmins());
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -113,21 +103,15 @@ router.get("/users", auth, (req: any, res: any) => {
     const cursorStr = req.query.cursor as string;
 
     if (limit !== null) {
-      const params: any = {};
-      let query = `SELECT ${userDirectoryFields} FROM users`;
-
+      let cursorId: number | string | undefined;
       if (cursorStr) {
         const cursor = decodeCursor(cursorStr);
         if (cursor && cursor.id) {
-          query += ` WHERE id < :cursorId`;
-          params.cursorId = cursor.id;
+          cursorId = cursor.id;
         }
       }
 
-      query += ` ORDER BY id DESC LIMIT :limitPlusOne`;
-      params.limitPlusOne = limit + 1;
-
-      const rows = db.prepare(query).all(params) as any[];
+      const rows = SharedDirectoryService.listAccountsPage(cursorId, limit + 1);
       const hasNextPage = rows.length > limit;
       const returnedRows = hasNextPage ? rows.slice(0, limit) : rows;
 
@@ -151,7 +135,7 @@ router.get("/users", auth, (req: any, res: any) => {
         }
       });
     } else {
-      const users = db.prepare(`SELECT ${userDirectoryFields} FROM users ORDER BY id DESC`).all();
+      const users = SharedDirectoryService.listAccounts();
       const enriched = enrichUsersWithStaffCode(users).map((user: any) => ({
         ...user,
         branch: normalizeBranchName(user.branch)
@@ -216,6 +200,11 @@ router.post("/users/bulk-add", canManageUsers, async (req: any, res: any) => {
 router.post("/users", canManageUsers, async (req: any, res: any) => {
   try {
     const data = req.body;
+    const requestedUsername = String(data.username || '').trim().toLowerCase();
+    const requestedRole = mapRoleToDb(data.role);
+    if (requestedUsername === 'admin' || requestedRole === 'admin') {
+      return res.status(403).json({ error: "Tài khoản Admin tối cao chỉ được hệ thống khôi phục tự động, không thể tạo thủ công." });
+    }
     
     if (data.password) {
       const passwordError = validatePassword(data.password);
@@ -294,6 +283,9 @@ router.put("/users/:id", auth, async (req: any, res: any) => {
     // Protect system admin from critical changes
     const targetUser = db.prepare(`SELECT username, role FROM users WHERE id=?`).get(userId) as any;
     if (targetUser && (targetUser.username === 'admin' || targetUser.role === 'admin')) {
+      if (currentUser.id.toString() !== userId) {
+        return res.status(403).json({ error: "Chỉ tài khoản Admin tối cao mới được tự cập nhật thông tin bảo mật của chính tài khoản này" });
+      }
       if (data.username !== undefined && data.username !== 'admin') {
         return res.status(403).json({ error: "Cannot change system administrator username" });
       }
@@ -389,6 +381,10 @@ router.post("/users/:id/reset_account", auth, async (req: any, res: any) => {
     }
 
     const defaultPassword = "Abcd@12345";
+    const targetUser = db.prepare('SELECT username, role FROM users WHERE id = ?').get(userId) as any;
+    if (targetUser?.username === 'admin' || mapRoleToDb(targetUser?.role) === 'admin') {
+      return res.status(403).json({ error: "Không thể reset cưỡng bức tài khoản Admin tối cao; hãy đổi mật khẩu sau khi đăng nhập." });
+    }
     const hashedPassword = bcrypt.hashSync(defaultPassword, 10);
 
     db.prepare('UPDATE users SET password = ?, known_devices = ? WHERE id = ?').run(hashedPassword, '[]', userId);

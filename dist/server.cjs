@@ -80,22 +80,6 @@ function checkAndReinitFirestore() {
   }
   return dbInstance;
 }
-async function testConnection() {
-  if (typeof window === "undefined") {
-    return;
-  }
-  if (dbInstance && dbInstance.isMock) {
-    console.warn("Skipping Firestore connection test since database is in mock fallback mode.");
-    return;
-  }
-  try {
-    await (0, import_firestore.getDocFromServer)((0, import_firestore.doc)(db, "test", "connection"));
-  } catch (error) {
-    if (error instanceof Error && (error.message.includes("the client is offline") || error.message.includes("offline"))) {
-      console.error("Please check your Firebase configuration.");
-    }
-  }
-}
 var import_app, import_auth, import_firestore, app, dbInstance, db, auth;
 var init_firebase = __esm({
   "src/firebase.ts"() {
@@ -137,7 +121,6 @@ var init_firebase = __esm({
       }
     });
     auth = (0, import_auth.getAuth)(app);
-    testConnection();
   }
 });
 
@@ -228,6 +211,8 @@ var firestore_sync_exports = {};
 __export(firestore_sync_exports, {
   clearAllFirestoreCollections: () => clearAllFirestoreCollections,
   deleteFromFirestore: () => deleteFromFirestore,
+  flushFirestoreSyncOutbox: () => flushFirestoreSyncOutbox,
+  retryFirestoreSync: () => retryFirestoreSync,
   startRealTimeSync: () => startRealTimeSync,
   syncFromFirestore: () => syncFromFirestore,
   syncRowToFirestore: () => syncRowToFirestore,
@@ -268,10 +253,7 @@ async function syncFromFirestore() {
             "compliance_cases",
             "arbitration_cases",
             "audit_logs",
-            "users",
-            "chat_channels",
-            "chat_channel_members",
-            "chat_messages"
+            "users"
           ];
           if (!skipDeleteTables.includes(tableName)) {
             targetDb.prepare(`DELETE FROM ${tableName}`).run();
@@ -337,7 +319,8 @@ async function syncFromFirestore() {
           }
         }
       } catch (tableErr) {
-        if (tableErr.message?.includes("Quota limit exceeded") || tableErr.message?.includes("quota") || tableErr.message?.includes("Quota")) {
+        if (isQuotaError(tableErr)) {
+          firestoreQuotaBlocked = true;
           console.warn(`Firestore quota exceeded while syncing table "${tableName}". Reverting to local SQLite cache.`);
           break;
         } else {
@@ -347,7 +330,8 @@ async function syncFromFirestore() {
     }
     console.log("=== FIRESTORE TO SQLITE SYNC COMPLETED SUCCESSFULLY ===");
   } catch (err) {
-    if (err.message?.includes("Quota") || err.message?.includes("quota")) {
+    if (isQuotaError(err)) {
+      firestoreQuotaBlocked = true;
       console.warn("Firestore quota exceeded during Firestore -> SQLite sync. Running on local SQLite engine.");
     } else {
       console.error("CRITICAL: Error during Firestore -> SQLite sync:", err.message);
@@ -357,6 +341,8 @@ async function syncFromFirestore() {
   }
 }
 async function syncToFirestore(tableName, id, data) {
+  if (tableName.startsWith("chat_")) return;
+  if (tableName === "system_performance_metrics" || firestoreQuotaBlocked) return;
   try {
     const docRef = (0, import_firestore2.doc)(db, tableName, String(id));
     const cleanedData = {};
@@ -414,10 +400,17 @@ async function syncToFirestore(tableName, id, data) {
     await (0, import_firestore2.setDoc)(docRef, cleanedData);
     console.log(`Successfully persisted ${tableName}/${id} to Firestore.`);
   } catch (err) {
+    if (isQuotaError(err)) {
+      firestoreQuotaBlocked = true;
+      queueFirestoreOperation(tableName, id, "upsert", data, err);
+      console.warn("[Firestore] Quota exhausted. Disabling further cloud writes for this process and continuing with local SQLite.");
+      return;
+    }
     console.error(`Error saving ${tableName}/${id} to Firestore:`, err.message);
   }
 }
 async function syncRowToFirestore(tableName, id) {
+  if (tableName.startsWith("chat_")) return;
   try {
     const targetDb = getDbForTable(tableName);
     const row = targetDb.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(id);
@@ -429,11 +422,19 @@ async function syncRowToFirestore(tableName, id) {
   }
 }
 async function deleteFromFirestore(tableName, id) {
+  if (tableName.startsWith("chat_")) return;
+  if (firestoreQuotaBlocked) return;
   try {
     const docRef = (0, import_firestore2.doc)(db, tableName, String(id));
     await (0, import_firestore2.deleteDoc)(docRef);
     console.log(`Successfully deleted ${tableName}/${id} from Firestore.`);
   } catch (err) {
+    if (isQuotaError(err)) {
+      firestoreQuotaBlocked = true;
+      queueFirestoreOperation(tableName, id, "delete", void 0, err);
+      console.warn("[Firestore] Quota exhausted. Disabling further cloud deletes for this process.");
+      return;
+    }
     console.error(`Error deleting ${tableName}/${id} from Firestore:`, err.message);
   }
 }
@@ -449,7 +450,7 @@ async function clearAllFirestoreCollections() {
       const snapshot = await (0, import_firestore2.getDocs)(colRef);
       if (!snapshot.empty) {
         console.log(`Clearing ${snapshot.size} documents from Firestore collection: "${tableName}"`);
-        const promises = snapshot.docs.map((doc4) => (0, import_firestore2.deleteDoc)(doc4.ref));
+        const promises = snapshot.docs.map((doc3) => (0, import_firestore2.deleteDoc)(doc3.ref));
         await Promise.all(promises);
       }
     } catch (err) {
@@ -462,9 +463,49 @@ async function clearAllFirestoreCollections() {
   }
   console.log("=== FIRESTORE COLLECTIONS CLEARED ===");
 }
+function queueFirestoreOperation(tableName, id, operation, payload, error) {
+  try {
+    database_default.prepare(`INSERT INTO firestore_sync_outbox (table_name, record_id, operation, payload, created_at, attempts, last_error)
+      VALUES (?, ?, ?, ?, ?, 0, ?)
+      ON CONFLICT(table_name, record_id) DO UPDATE SET operation = excluded.operation, payload = excluded.payload, last_error = excluded.last_error`).run(tableName, String(id), operation, payload === void 0 ? null : JSON.stringify(payload), (/* @__PURE__ */ new Date()).toISOString(), String(error?.message || error || "").slice(0, 500));
+  } catch (queueError) {
+    console.error(`[Firestore] Failed to queue ${operation} ${tableName}/${id}:`, queueError.message);
+  }
+}
+async function flushFirestoreSyncOutbox() {
+  if (db.isMock) return 0;
+  const pending = database_default.prepare("SELECT * FROM firestore_sync_outbox ORDER BY id ASC LIMIT 100").all();
+  let flushed = 0;
+  for (const item of pending) {
+    try {
+      const ref = (0, import_firestore2.doc)(db, item.table_name, String(item.record_id));
+      if (item.operation === "delete") await (0, import_firestore2.deleteDoc)(ref);
+      else await (0, import_firestore2.setDoc)(ref, JSON.parse(item.payload || "{}"));
+      database_default.prepare("DELETE FROM firestore_sync_outbox WHERE id = ?").run(item.id);
+      flushed++;
+    } catch (err) {
+      database_default.prepare("UPDATE firestore_sync_outbox SET attempts = attempts + 1, last_error = ? WHERE id = ?").run(String(err?.message || err).slice(0, 500), item.id);
+      if (isQuotaError(err)) {
+        firestoreQuotaBlocked = true;
+        break;
+      }
+    }
+  }
+  return flushed;
+}
+async function retryFirestoreSync() {
+  if (db.isMock) return;
+  firestoreQuotaBlocked = false;
+  await flushFirestoreSyncOutbox();
+  if (!firestoreQuotaBlocked) startRealTimeSync();
+}
 function startRealTimeSync() {
   if (db.isMock) {
     console.log("[RealTimeSync] Firestore is in fallback mock mode. Real-time sync listener disabled.");
+    return;
+  }
+  if (firestoreQuotaBlocked) {
+    console.warn("[RealTimeSync] Firestore quota is exhausted. Cloud listeners remain disabled; local SQLite and Socket.IO stay active.");
     return;
   }
   console.log("=== STARTING SERVER-SIDE REAL-TIME SYNC WITH FIRESTORE ===");
@@ -486,8 +527,7 @@ function startRealTimeSync() {
     "payment_schedules",
     "payment_transactions",
     "court_schedule",
-    "voip_calls",
-    "chat_messages"
+    "voip_calls"
   ];
   for (const tableName of tablesToListen) {
     try {
@@ -536,7 +576,8 @@ function startRealTimeSync() {
           }
         });
       }, (err) => {
-        if (err.message?.includes("Quota limit exceeded") || err.message?.includes("quota") || err.message?.includes("Quota")) {
+        if (isQuotaError(err)) {
+          firestoreQuotaBlocked = true;
           console.warn(`[RealTimeSync] Firestore quota exceeded for real-time listener on "${tableName}". Real-time updates paused.`);
         } else {
           console.error(`[RealTimeSync] Error in real-time listener for "${tableName}":`, err.message);
@@ -548,7 +589,7 @@ function startRealTimeSync() {
     }
   }
 }
-var import_firestore2, TABLES_TO_SYNC, activeListeners;
+var import_firestore2, TABLES_TO_SYNC, activeListeners, firestoreQuotaBlocked, isQuotaError;
 var init_firestore_sync = __esm({
   "src/db/firestore-sync.ts"() {
     init_firebase();
@@ -581,7 +622,6 @@ var init_firestore_sync = __esm({
       "precedents",
       "testimonials",
       "messages",
-      "visitor_stats",
       "record_types",
       "erp_records",
       "legal_documents_history",
@@ -603,7 +643,6 @@ var init_firestore_sync = __esm({
       "hr_attendance",
       "hr_leave_requests",
       "hr_payrolls",
-      "hr_performances",
       "hr_contracts",
       "hr_equipment",
       "hr_training",
@@ -634,11 +673,6 @@ var init_firestore_sync = __esm({
       "quality_assurance_evaluations",
       "gmail_accounts",
       "recycle_bin",
-      // Collaborative Chat Tables
-      "chat_channels",
-      "chat_channel_members",
-      "chat_messages",
-      "chat_reactions",
       // Isolated Domain Case Tables
       "litigation_cases",
       "consultation_cases",
@@ -647,15 +681,21 @@ var init_firestore_sync = __esm({
       "arbitration_cases"
     ];
     activeListeners = [];
+    firestoreQuotaBlocked = false;
+    isQuotaError = (err) => {
+      const message = String(err?.message || err || "");
+      return /quota|resource.?exhausted|rate.?limit/i.test(message);
+    };
   }
 });
 
 // src/db/database.ts
-var import_better_sqlite32, import_fs2, dbPath, db2, casesColumns, permColumns, newColumns, landPriceCols, seedData, SYNCED_TABLES, originalPrepare, database_default;
+var import_better_sqlite32, import_fs2, import_bcrypt, dbPath, db2, casesColumns, permColumns, newColumns, landPriceCols, seedData, SYNCED_TABLES, originalPrepare, database_default;
 var init_database = __esm({
   "src/db/database.ts"() {
     import_better_sqlite32 = __toESM(require("better-sqlite3"), 1);
     import_fs2 = __toESM(require("fs"), 1);
+    import_bcrypt = __toESM(require("bcrypt"), 1);
     dbPath = process.env.NODE_ENV === "production" ? "/tmp/lawfirm.db" : "lawfirm.db";
     try {
       db2 = new import_better_sqlite32.default(dbPath);
@@ -745,6 +785,7 @@ var init_database = __esm({
   );
   
   CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT, phone TEXT, content TEXT, created_at TEXT, is_read INTEGER DEFAULT 0, reply_notes TEXT);
+  CREATE TABLE IF NOT EXISTS portal_activities(id TEXT PRIMARY KEY, type TEXT NOT NULL, client_id TEXT, client_name TEXT, document_title TEXT, response_time_minutes INTEGER, timestamp TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS visitor_stats(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT UNIQUE, visitors INTEGER DEFAULT 0, page_views INTEGER DEFAULT 0, chats INTEGER DEFAULT 0);
   CREATE TABLE IF NOT EXISTS record_types(id INTEGER PRIMARY KEY AUTOINCREMENT, type_code TEXT, type_name TEXT, description TEXT, display_color TEXT, active INTEGER DEFAULT 1);
   CREATE TABLE IF NOT EXISTS erp_records(id TEXT PRIMARY KEY, data TEXT);
@@ -801,6 +842,18 @@ var init_database = __esm({
     viewEventHistory INTEGER DEFAULT 0
   );
 
+  CREATE TABLE IF NOT EXISTS firestore_sync_outbox(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_name TEXT NOT NULL,
+    record_id TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    payload TEXT,
+    created_at TEXT NOT NULL,
+    attempts INTEGER DEFAULT 0,
+    last_error TEXT,
+    UNIQUE(table_name, record_id)
+  );
+
   
   CREATE TABLE IF NOT EXISTS record_messages(id INTEGER PRIMARY KEY AUTOINCREMENT, record_id TEXT, sender_name TEXT, sender_role TEXT, content TEXT, file_url TEXT, file_name TEXT, created_at TEXT, is_read INTEGER DEFAULT 0);
   CREATE TABLE IF NOT EXISTS live_messages(
@@ -824,6 +877,31 @@ var init_database = __esm({
     signer TEXT,
     content TEXT,
     status TEXT,
+    created_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS signed_documents(
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    client_name TEXT,
+    template_id TEXT,
+    document_title TEXT,
+    document_code TEXT,
+    signed_url TEXT,
+    signed_at TEXT,
+    ink_color TEXT,
+    method TEXT,
+    created_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS appointments(
+    id TEXT PRIMARY KEY,
+    client_name TEXT NOT NULL,
+    phone TEXT,
+    category TEXT,
+    date_time TEXT,
+    assigned_staff TEXT,
+    type TEXT,
+    notes TEXT,
+    status TEXT DEFAULT 'pending',
     created_at TEXT
   );
 
@@ -1449,6 +1527,14 @@ var init_database = __esm({
     } catch (e) {
     }
     try {
+      db2.prepare("ALTER TABLE users ADD COLUMN login_failures INTEGER DEFAULT 0").run();
+    } catch (e) {
+    }
+    try {
+      db2.prepare("ALTER TABLE users ADD COLUMN locked_until TEXT").run();
+    } catch (e) {
+    }
+    try {
       db2.prepare("ALTER TABLE users ADD COLUMN practice_areas TEXT").run();
     } catch (e) {
     }
@@ -1456,6 +1542,20 @@ var init_database = __esm({
       db2.prepare("ALTER TABLE users ADD COLUMN account_type TEXT DEFAULT 'INTERNAL'").run();
     } catch (e) {
     }
+    db2.exec(`
+  CREATE TRIGGER IF NOT EXISTS protect_system_admin_delete
+  BEFORE DELETE ON users
+  WHEN OLD.username = 'admin' OR OLD.role = 'admin'
+  BEGIN
+    SELECT RAISE(ABORT, 'SYSTEM_ADMIN_PROTECTED');
+  END;
+  CREATE TRIGGER IF NOT EXISTS protect_system_admin_identity
+  BEFORE UPDATE OF username, role ON users
+  WHEN OLD.username = 'admin' AND (NEW.username <> 'admin' OR NEW.role <> 'admin')
+  BEGIN
+    SELECT RAISE(ABORT, 'SYSTEM_ADMIN_IDENTITY_PROTECTED');
+  END;
+`);
     try {
       db2.prepare("ALTER TABLE recycle_bin ADD COLUMN deleted_by TEXT").run();
     } catch (e) {
@@ -2503,11 +2603,14 @@ H\u1ED7 tr\u1EE3 ph\xE1p l\xFD t\u1EADn t\xE2m \u0111\u1EC3 \u0111\u1EA3m b\u1EA
         insertOffice.run("Chi nh\xE1nh V\u0169ng T\xE0u", "V\u0169ng T\xE0u", "south", "S\u1ED1 516 C\xE1ch M\u1EA1ng Th\xE1ng T\xE1m, Ph\u01B0\u1EDDng Ph\u01B0\u1EDBc Trung, TP. B\xE0 R\u1ECBa, V\u0169ng T\xE0u", "1900 3330", "info@anhduonglaw.vn", "https://maps.google.com/?q=516+CMT8+Phuoc+Trung+Ba+Ria+Vung+Tau", 0, 10.4963, 107.1691);
         insertOffice.run("Chi nh\xE1nh H\u1EA3i Ph\xF2ng", "H\u1EA3i Ph\xF2ng", "north", "S\u1ED1 30 \u0110\u01B0\u1EDDng Tr\u1EA7n Nguy\xEAn H\xE3n, Ph\u01B0\u1EDDng L\xEA Ch\xE2n, TP. H\u1EA3i Ph\xF2ng", "1900 3330", "info@anhduonglaw.vn", "https://maps.google.com/?q=30+Tran+Nguyen+Han+Le+Chan+Hai+Phong", 0, 20.8449, 106.6881);
       }
-      const adminExists = db2.prepare("SELECT COUNT(*) as count FROM users WHERE username = 'admin'").get();
-      if (adminExists.count === 0) {
-        db2.prepare("INSERT INTO users (username, password, name, role, staff_code, title, branch, salary, practice_areas) VALUES ('admin', 'Abcd@12345', 'Qu\u1EA3n tr\u1ECB vi\xEAn', 'admin', 'QTV001', '', 'Tr\u1EE5 s\u1EDF ch\xEDnh', '0', 'ban_giam_doc')").run();
+      const adminPassword = process.env.ADMIN_INITIAL_PASSWORD || "Abcd@12345";
+      const adminPasswordHash = import_bcrypt.default.hashSync(adminPassword, 12);
+      const adminExists = db2.prepare("SELECT id, password FROM users WHERE username = 'admin' OR role = 'admin' ORDER BY CASE WHEN username = 'admin' THEN 0 ELSE 1 END, id LIMIT 1").get();
+      if (!adminExists) {
+        db2.prepare("INSERT INTO users (username, password, name, role, staff_code, title, branch, salary, practice_areas, account_type, known_devices, login_failures, locked_until) VALUES (?, ?, 'Qu\u1EA3n tr\u1ECB vi\xEAn', 'admin', 'QTV001', '', 'Tr\u1EE5 s\u1EDF ch\xEDnh', '0', 'ban_giam_doc', 'INTERNAL', '[]', 0, NULL)").run("admin", adminPasswordHash);
       } else {
-        db2.prepare("UPDATE users SET name = 'Qu\u1EA3n tr\u1ECB vi\xEAn', password = 'Abcd@12345', title = '', practice_areas = 'ban_giam_doc', salary = '0', branch = 'Tr\u1EE5 s\u1EDF ch\xEDnh' WHERE username = 'admin'").run();
+        const passwordUpdate = adminExists.password && /^\$2[aby]\$/.test(adminExists.password) ? adminExists.password : adminPasswordHash;
+        db2.prepare("UPDATE users SET username = 'admin', name = 'Qu\u1EA3n tr\u1ECB vi\xEAn', role = 'admin', password = ?, title = '', practice_areas = 'ban_giam_doc', salary = '0', branch = 'Tr\u1EE5 s\u1EDF ch\xEDnh', account_type = 'INTERNAL' WHERE id = ?").run(passwordUpdate, adminExists.id);
       }
       try {
         db2.prepare("UPDATE users SET branch = 'Tr\u1EE5 s\u1EDF ch\xEDnh', salary = '0' WHERE username = 'admin'").run();
@@ -3721,15 +3824,83 @@ var init_ArbitrationRepository = __esm({
   }
 });
 
+// src/domain/events/domainRecordEvents.ts
+var import_node_events, domainRecordEvents, emitDomainRecordChange;
+var init_domainRecordEvents = __esm({
+  "src/domain/events/domainRecordEvents.ts"() {
+    import_node_events = require("node:events");
+    domainRecordEvents = new import_node_events.EventEmitter();
+    emitDomainRecordChange = (change) => {
+      const payload = {
+        ...change,
+        timestamp: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      domainRecordEvents.emit("changed", payload);
+      return payload;
+    };
+  }
+});
+
 // src/system/data-access/SystemDataAccess.ts
+function normalizeCategoryText(value) {
+  return (value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[_-]+/g, " ").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
 function mapCategoryToDomain(categoryOrArea) {
-  if (!categoryOrArea) return "litigation";
-  const normalized = categoryOrArea.toLowerCase().replace(/_/g, "-");
-  if (normalized.includes("tranh-tung") || normalized.includes("litigation")) return "litigation";
-  if (normalized.includes("tu-van") || normalized.includes("consultation")) return "consultation";
-  if (normalized.includes("dai-dien") || normalized.includes("representation")) return "representation";
-  if (normalized.includes("phap-che") || normalized.includes("compliance")) return "compliance";
-  if (normalized.includes("trong-tai") || normalized.includes("arbitration")) return "arbitration";
+  const normalized = normalizeCategoryText(categoryOrArea);
+  if (!normalized) return "litigation";
+  const domainRules = {
+    arbitration: [
+      "trong tai",
+      "hoa giai",
+      "arbitration",
+      "mediation",
+      "tranh chap trong tai",
+      "trong tai hoa giai"
+    ],
+    compliance: [
+      "phap che",
+      "compliance",
+      "tuan thu",
+      "tuan thu phap luat",
+      "noi bo",
+      "risk management",
+      "kiem soat rui ro",
+      "phap che noi bo"
+    ],
+    representation: [
+      "dai dien",
+      "dai dien ngoai to tung",
+      "representation",
+      "ngoai to tung",
+      "dai dien khach hang",
+      "ngoai to"
+    ],
+    consultation: [
+      "tu van",
+      "tu van phap ly",
+      "consultation",
+      "counseling",
+      "phap ly",
+      "tu van doanh nghiep",
+      "hoi dong phap ly"
+    ],
+    litigation: [
+      "tranh tung",
+      "litigation",
+      "hinh su",
+      "dan su",
+      "hinh su dan su",
+      "hanh chinh",
+      "khieu nai",
+      "phuc tham",
+      "danh gia",
+      "tranh chap",
+      "cong ty"
+    ]
+  };
+  for (const [domain, keywords] of Object.entries(domainRules)) {
+    if (keywords.some((keyword) => normalized.includes(keyword))) return domain;
+  }
   return "litigation";
 }
 var DOMAINS, SystemDataAccess;
@@ -3741,6 +3912,7 @@ var init_SystemDataAccess = __esm({
     init_ComplianceRepository();
     init_ArbitrationRepository();
     init_database();
+    init_domainRecordEvents();
     DOMAINS = ["litigation", "consultation", "representation", "compliance", "arbitration"];
     SystemDataAccess = class {
       static getAllRecords(domains = DOMAINS) {
@@ -3774,6 +3946,15 @@ var init_SystemDataAccess = __esm({
         }
         return null;
       }
+      static findRecordByToken(token) {
+        const normalizedToken = String(token || "").trim();
+        if (!normalizedToken) return null;
+        const exact = this.getRecordById(normalizedToken);
+        if (exact) return exact;
+        return this.getAllRecords().find(
+          (record) => String(record.id || "") === normalizedToken || String(record.systemId || "") === normalizedToken || String(record.contractId || "") === normalizedToken || JSON.stringify(record).includes(normalizedToken)
+        ) || null;
+      }
       static saveRecord(record) {
         const category = record.category || record.practice_area;
         const domain = mapCategoryToDomain(category);
@@ -3792,6 +3973,12 @@ var init_SystemDataAccess = __esm({
         } catch (e) {
           console.warn("Write-through to legacy erp_records table skipped or failed:", e.message);
         }
+        emitDomainRecordChange({
+          action: "upsert",
+          domain,
+          id: String(record.id),
+          data: record
+        });
       }
       static deleteRecord(id) {
         const stringId = String(id).trim();
@@ -3824,6 +4011,11 @@ var init_SystemDataAccess = __esm({
           database_default.prepare(`DELETE FROM erp_records WHERE id = ?`).run(stringId);
         } catch (e) {
         }
+        emitDomainRecordChange({
+          action: "delete",
+          domain: "federated",
+          id: stringId
+        });
       }
       static queryFederated(options) {
         let selectedDomains = DOMAINS;
@@ -4832,10 +5024,30 @@ var init_trash_service = __esm({
        * Permanent Delete (Recycle Bin / TRASHED -> PERMANENTLY_DELETED)
        */
       static async permanentDelete(id, performedBy) {
-        const stringId = String(id).trim();
+        let stringId = String(id).trim();
         console.log(`[TRASH DEBUG] permanentDelete called for ID: ${stringId}, performedBy: ${performedBy}`);
         const now = (/* @__PURE__ */ new Date()).toISOString();
-        const binRow = database_default.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(stringId);
+        let binRow = database_default.prepare("SELECT * FROM recycle_bin WHERE id = ? OR master_id = ?").get(stringId, stringId);
+        if (!binRow) {
+          const candidates = /* @__PURE__ */ new Set([stringId]);
+          if (stringId.startsWith("HS-")) {
+            candidates.add(stringId.slice(3));
+            candidates.add(`HS${stringId.slice(3)}`);
+          } else if (stringId.startsWith("HS")) {
+            candidates.add(stringId.slice(2).replace(/^[-]/, ""));
+            candidates.add(`HS-${stringId.slice(2).replace(/^[-]/, "")}`);
+          } else {
+            candidates.add(`HS-${stringId}`);
+            candidates.add(`HS${stringId}`);
+          }
+          for (const candidate of candidates) {
+            binRow = database_default.prepare("SELECT * FROM recycle_bin WHERE id = ? OR master_id = ?").get(candidate, candidate);
+            if (binRow) {
+              stringId = String(binRow.id);
+              break;
+            }
+          }
+        }
         if (binRow && binRow.original_table === "chat_channels") {
           let chanData = {};
           try {
@@ -5089,14 +5301,52 @@ var init_trash_service = __esm({
        * Empty / purge all items in the recycle bin
        */
       static async emptyTrash(performedBy = "Qu\u1EA3n tr\u1ECB vi\xEAn") {
-        await this.syncAndBackfillTrash();
-        const allBins = database_default.prepare("SELECT id FROM recycle_bin").all();
-        let count = 0;
+        const allBins = database_default.prepare("SELECT id, master_id, masterId, systemId, data FROM recycle_bin").all();
+        const ids = /* @__PURE__ */ new Set();
         for (const item of allBins) {
-          await this.permanentDelete(String(item.id), performedBy);
-          count++;
+          for (const value of [item.id, item.master_id, item.masterId, item.systemId]) {
+            if (value) ids.add(String(value));
+          }
+          try {
+            const data = typeof item.data === "string" ? JSON.parse(item.data) : item.data;
+            for (const value of [data?.id, data?.masterId, data?.systemId, data?.contractId, data?.authContractId]) {
+              if (value) ids.add(String(value));
+            }
+          } catch {
+          }
         }
-        return count;
+        const deletedCases = database_default.prepare("SELECT id FROM cases WHERE is_deleted = 1").all();
+        deletedCases.forEach((row) => ids.add(String(row.id)));
+        const deletedRecords = database_default.prepare("SELECT id FROM erp_records WHERE json_extract(data, '$.deleted') IN (1, true) OR json_extract(data, '$.is_deleted') IN (1, true) OR json_extract(data, '$.status') = 'TRASHED'").all();
+        deletedRecords.forEach((row) => ids.add(String(row.id)));
+        for (const id of ids) {
+          SystemDataAccess.deleteRecord(id);
+          database_default.prepare("DELETE FROM cases WHERE id = ?").run(id);
+          database_default.prepare("DELETE FROM files WHERE case_id = ?").run(id);
+          database_default.prepare("DELETE FROM court_schedule WHERE case_id = ?").run(id);
+          database_default.prepare("DELETE FROM recycle_bin WHERE id = ? OR master_id = ? OR masterId = ? OR systemId = ?").run(id, id, id, id);
+          try {
+            await deleteFromFirestore("recycle_bin", id);
+            await deleteFromFirestore("erp_records", id);
+            await deleteFromFirestore("cases", id);
+          } catch (syncError) {
+            console.error("[TrashService] Failed to remove purged item from Firestore:", id, syncError);
+          }
+        }
+        const remaining = database_default.prepare("SELECT COUNT(*) AS count FROM recycle_bin").get();
+        database_default.prepare("DELETE FROM recycle_bin").run();
+        this.io?.emit("recycle_bin_updated", { action: "empty_all" });
+        this.logAudit({
+          action: "EMPTY_RECYCLE_BIN",
+          entityType: "recycle_bin",
+          entityId: "all",
+          performedBy,
+          performedAt: (/* @__PURE__ */ new Date()).toISOString(),
+          reason: "D\u1ECDn s\u1EA1ch to\xE0n b\u1ED9 th\xF9ng r\xE1c h\u1EC7 th\u1ED1ng",
+          result: "SUCCESS",
+          details: { deletedIds: Array.from(ids), remainingBeforeCleanup: remaining.count }
+        });
+        return allBins.length;
       }
       /**
        * List all active items in the Recycle Bin
@@ -5104,9 +5354,6 @@ var init_trash_service = __esm({
       static async listTrash(searchQuery = "") {
         await this.cleanupExpired(30);
         const binRows = database_default.prepare("SELECT * FROM recycle_bin ORDER BY deleted_at DESC").all();
-        console.log("[TrashService] Raw recycle_bin rows from DB:", binRows);
-        console.log("recycleBinRows:", binRows);
-        console.log(`[TRASH DEBUG] recycleBinRows = ${binRows.length}`);
         const itemsMap = /* @__PURE__ */ new Map();
         const seenEntityKeys = /* @__PURE__ */ new Set();
         for (const r of binRows) {
@@ -5120,12 +5367,7 @@ var init_trash_service = __esm({
             } else {
               const resolved = this.resolveMasterId(parsed, r.masterId || r.master_id || r.systemId || stringId);
               masterId = this.ensureHsPrefix(resolved, parsed);
-              console.log(
-                `[TrashService] Master ID Logic - Record ID: "${stringId}", Original Table: "${r.original_table}", Raw System/Master: { systemId: "${parsed.systemId}", masterId: "${r.masterId || r.master_id || parsed.masterId}", contractId: "${parsed.contractId}", authContractId: "${parsed.authContractId}" }, Resolved: "${resolved}", Canonical HS Master ID: "${masterId}"`
-              );
             }
-            console.log("masterId:", masterId);
-            console.log(`[TRASH DEBUG] masterId = ${masterId}`);
             if (seenEntityKeys.has(masterId)) continue;
             seenEntityKeys.add(masterId);
             itemsMap.set(masterId, {
@@ -5146,13 +5388,8 @@ var init_trash_service = __esm({
           for (const c of trashedCases) {
             const stringId = String(c.id);
             const masterId = this.ensureHsPrefix(stringId, c);
-            console.log(
-              `[TrashService] Master ID Logic (from cases table) - Case ID: "${stringId}", Enforced HS Master ID: "${masterId}"`
-            );
             if (seenEntityKeys.has(masterId)) continue;
             seenEntityKeys.add(masterId);
-            console.log("masterId:", masterId);
-            console.log(`[TRASH DEBUG] masterId = ${masterId}`);
             const caseData = {
               id: masterId,
               masterId,
@@ -5212,22 +5449,15 @@ var init_trash_service = __esm({
           }
         } catch (chanErr) {
         }
-        console.log(`[TRASH DEBUG] groupedRows = ${itemsMap.size}`);
         let items = Array.from(itemsMap.values());
         items.sort((a, b) => new Date(b.deletedAt).getTime() - new Date(a.deletedAt).getTime());
-        console.log("[TrashService] Items array BEFORE search filtering:", items);
-        console.log(`[TrashService] Items count BEFORE search filtering: ${items.length}`);
         if (searchQuery && searchQuery.trim()) {
           const q = searchQuery.toLowerCase().trim();
           items = items.filter(
             (it) => it.id.toLowerCase().includes(q) || (it.data?.title || "").toLowerCase().includes(q) || (it.data?.client || "").toLowerCase().includes(q)
           );
         }
-        console.log(`[TrashService] Items array AFTER search filtering (query: "${searchQuery}"):`, items);
-        console.log(`[TrashService] Items count AFTER search filtering: ${items.length}`);
-        console.log("[TrashService] Final mapped array being returned to UI:", items);
-        console.log("finalRows:", items);
-        console.log(`[TRASH DEBUG] finalRows = ${items.length}`);
+        console.log(`[TrashService] Returning ${items.length} trash items`);
         return items;
       }
     };
@@ -6628,9 +6858,13 @@ var import_compression = __toESM(require("compression"), 1);
 var import_dotenv = __toESM(require("dotenv"), 1);
 import_dotenv.default.config();
 var config = {
-  PORT: 3e3,
+  PORT: Number(process.env.PORT) || 3001,
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || "",
+  AI_ENABLED: process.env.AI_ENABLED !== "false",
   SESSION_SECRET: process.env.SESSION_SECRET || "lawfirm_secret",
+  BANK_WEBHOOK_SECRET: process.env.BANK_WEBHOOK_SECRET || "",
+  BANK_ACCOUNT_NUMBER: process.env.BANK_ACCOUNT_NUMBER || "",
+  BANK_ACCOUNT_HOLDER: process.env.BANK_ACCOUNT_HOLDER || "",
   NODE_ENV: process.env.NODE_ENV || "development"
 };
 
@@ -6680,12 +6914,21 @@ function runMigration() {
     compliance: 0,
     arbitration: 0
   };
+  const oldIdsByDomain = {
+    litigation: /* @__PURE__ */ new Set(),
+    consultation: /* @__PURE__ */ new Set(),
+    representation: /* @__PURE__ */ new Set(),
+    compliance: /* @__PURE__ */ new Set(),
+    arbitration: /* @__PURE__ */ new Set()
+  };
   for (const row of legacyRows) {
     try {
       const item = JSON.parse(row.data);
       const domain = mapCategoryToDomain(item.category || item.practice_area);
       if (oldCounts[domain] !== void 0) {
         oldCounts[domain]++;
+        const recordId = String(item.id || item.systemId || row.id || "").trim();
+        if (recordId) oldIdsByDomain[domain].add(recordId);
       }
       SystemDataAccess.saveRecord(item);
     } catch (parseErr) {
@@ -6700,6 +6943,13 @@ function runMigration() {
     compliance: ComplianceRepository.getAll().length,
     arbitration: ArbitrationRepository.getAll().length
   };
+  const newIdsByDomain = {
+    litigation: new Set(LitigationRepository.getAll().map((item) => String(item.id || item.systemId || "").trim()).filter(Boolean)),
+    consultation: new Set(ConsultationRepository.getAll().map((item) => String(item.id || item.systemId || "").trim()).filter(Boolean)),
+    representation: new Set(RepresentationRepository.getAll().map((item) => String(item.id || item.systemId || "").trim()).filter(Boolean)),
+    compliance: new Set(ComplianceRepository.getAll().map((item) => String(item.id || item.systemId || "").trim()).filter(Boolean)),
+    arbitration: new Set(ArbitrationRepository.getAll().map((item) => String(item.id || item.systemId || "").trim()).filter(Boolean))
+  };
   console.log("\n============================================================");
   console.log("MIGRATION INTEGRITY REPORT");
   console.log("============================================================");
@@ -6707,11 +6957,16 @@ function runMigration() {
   for (const domain of Object.keys(oldCounts)) {
     const oldVal = oldCounts[domain];
     const newVal = newCounts[domain];
-    const mismatch = Math.abs(oldVal - newVal);
+    const legacyIds = oldIdsByDomain[domain];
+    const migratedIds = newIdsByDomain[domain];
+    const matchedLegacy = Array.from(legacyIds).filter((id) => id && migratedIds.has(id)).length;
+    const missingLegacy = Math.max(0, legacyIds.size - matchedLegacy);
+    const mismatch = missingLegacy;
     totalMismatch += mismatch;
     console.log(`${domain.toUpperCase()}:`);
     console.log(`  OLD COUNT: ${oldVal}`);
     console.log(`  NEW COUNT: ${newVal}`);
+    console.log(`  MISSING LEGACY IDS: ${missingLegacy}`);
     console.log(`  MISMATCH : ${mismatch === 0 ? "0 (\u2713 MATCHED)" : mismatch + " (\u274C MISMATCH)"}`);
   }
   console.log("============================================================");
@@ -6869,7 +7124,7 @@ var MemoryMonitor = class _MemoryMonitor {
     this.oomPercent = parseInt(process.env.MEMORY_OOM_PERCENT || "95", 10);
   }
   static {
-    this.intervalMs = parseInt(process.env.MEMORY_MONITOR_INTERVAL_MS || "5000", 10);
+    this.intervalMs = parseInt(process.env.MEMORY_MONITOR_INTERVAL_MS || "60000", 10);
   }
   static {
     this.bufferSize = parseInt(process.env.MEMORY_STATE_BUFFER_SIZE || "500", 10);
@@ -7208,13 +7463,11 @@ var MemoryMonitor = class _MemoryMonitor {
 };
 var MemoryMonitor_default = MemoryMonitor;
 
-// src/modules/auth/auth.routes.ts
-var import_express = require("express");
-
 // src/middleware/auth.ts
 var import_jsonwebtoken = __toESM(require("jsonwebtoken"), 1);
 init_database();
 init_role();
+init_SystemDataAccess();
 function auth2(req, res, next) {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ") && authHeader !== "Bearer null" && authHeader !== "Bearer undefined" && authHeader.substring(7).trim() !== "") {
@@ -7232,14 +7485,17 @@ function auth2(req, res, next) {
     req.user = req.session.user;
     return next();
   }
-  if (config.NODE_ENV !== "production" || req.headers["x-bypass-auth"] === "true" || req.headers["user-agent"]?.includes("curl")) {
-    const defaultUser = { id: 1, username: "admin", role: "admin", name: "Qu\u1EA3n tr\u1ECB vi\xEAn" };
-    req.session = req.session || {};
-    req.session.user = defaultUser;
-    req.user = defaultUser;
-    return next();
-  }
   return res.status(401).json({ error: "X\xE1c th\u1EF1c kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c ch\u01B0a \u0111\u0103ng nh\u1EADp", success: false });
+}
+function requireRoles(...allowedRoles) {
+  return (req, res, next) => {
+    auth2(req, res, () => {
+      const mappedRole = mapRoleToDb(req.user?.role || req.session?.user?.role);
+      const normalizedAllowed = allowedRoles.map((role) => mapRoleToDb(role));
+      if (normalizedAllowed.includes(mappedRole) || mappedRole === "admin") return next();
+      return res.status(403).json({ error: "permission denied" });
+    });
+  };
 }
 function requirePermission(permissionKey) {
   return (req, res, next) => {
@@ -7247,7 +7503,7 @@ function requirePermission(permissionKey) {
       if (!req.session || !req.session.user) {
         return res.status(401).json({ error: "login required" });
       }
-      const role = req.session.user.role;
+      const role = req.user?.role || req.session.user.role;
       const mappedRole = mapRoleToDb(role);
       if (mappedRole === "admin" || mappedRole === "director" || mappedRole === "deputyDirector") {
         return next();
@@ -7302,15 +7558,19 @@ function checkResourceAccess(user, resourceType, resourceId) {
   const dataScope = getDataScope(user);
   if (dataScope === "ALL") return true;
   if (resourceType === "case" || resourceType === "record" || resourceType === "chat") {
-    const record = database_default.prepare("SELECT * FROM erp_records WHERE id = ?").get(resourceId);
+    const record = SystemDataAccess.getRecordById(resourceId) ?? (() => {
+      try {
+        const legacyRow = database_default.prepare("SELECT * FROM erp_records WHERE id = ?").get(resourceId);
+        if (!legacyRow) return null;
+        return typeof legacyRow.data === "string" ? JSON.parse(legacyRow.data) : legacyRow.data;
+      } catch (e) {
+        return null;
+      }
+    })();
     if (!record) {
       return true;
     }
-    let recordData = {};
-    try {
-      recordData = typeof record.data === "string" ? JSON.parse(record.data) : record.data;
-    } catch (e) {
-    }
+    const recordData = record && typeof record === "object" && "data" in record ? record.data || record : record;
     if (accountType === "CUSTOMER") {
       const isClient = user.case_id === resourceId || recordData.client === user.name || recordData.clientIdCard === user.username;
       return !!isClient;
@@ -7348,11 +7608,12 @@ function requireResourceAccess(resourceType, idParamName = "id") {
 }
 
 // src/modules/auth/auth.routes.ts
+var import_express = require("express");
 var import_express_rate_limit = __toESM(require("express-rate-limit"), 1);
 
 // src/modules/auth/auth.service.ts
 init_database();
-var import_bcrypt = __toESM(require("bcrypt"), 1);
+var import_bcrypt2 = __toESM(require("bcrypt"), 1);
 var import_jsonwebtoken2 = __toESM(require("jsonwebtoken"), 1);
 
 // src/utils/password.ts
@@ -7441,7 +7702,28 @@ var enrichUsersWithStaffCode = (users) => {
 };
 
 // src/modules/auth/auth.service.ts
-var AuthService = class {
+init_role();
+var AuthService = class _AuthService {
+  static isProtectedAdmin(user) {
+    return String(user?.username || "").toLowerCase() === "admin" || mapRoleToDb(user?.role) === "admin";
+  }
+  static getLoginLock(dbUser) {
+    const lockedUntil = dbUser?.locked_until ? new Date(dbUser.locked_until).getTime() : 0;
+    if (!lockedUntil || lockedUntil <= Date.now()) {
+      return { locked: false, retryAfterSeconds: 0 };
+    }
+    return { locked: true, retryAfterSeconds: Math.ceil((lockedUntil - Date.now()) / 1e3) };
+  }
+  static recordFailedLogin(dbUser) {
+    const failures = Number(dbUser?.login_failures || 0) + 1;
+    const maxFailures = _AuthService.isProtectedAdmin(dbUser) ? 5 : 10;
+    const lockMinutes = _AuthService.isProtectedAdmin(dbUser) ? 30 : 10;
+    const lockedUntil = failures >= maxFailures ? new Date(Date.now() + lockMinutes * 60 * 1e3).toISOString() : null;
+    database_default.prepare("UPDATE users SET login_failures = ?, locked_until = ? WHERE id = ?").run(failures >= maxFailures ? 0 : failures, lockedUntil, dbUser.id);
+  }
+  static clearFailedLogins(userId) {
+    database_default.prepare("UPDATE users SET login_failures = 0, locked_until = NULL WHERE id = ?").run(userId);
+  }
   /**
    * Finds a user by their username or phone number.
    */
@@ -7464,12 +7746,12 @@ var AuthService = class {
     let isValid = false;
     const storedPassword = dbUser.password;
     if (storedPassword.startsWith("$2b$") || storedPassword.startsWith("$2a$")) {
-      isValid = import_bcrypt.default.compareSync(password, storedPassword);
+      isValid = import_bcrypt2.default.compareSync(password, storedPassword);
     } else {
       isValid = storedPassword === password;
       if (isValid) {
         try {
-          const hashed = import_bcrypt.default.hashSync(password, 10);
+          const hashed = import_bcrypt2.default.hashSync(password, 10);
           database_default.prepare("UPDATE users SET password = ? WHERE id = ?").run(hashed, dbUser.id);
           console.log(`[AuthService] Successfully migrated password hash for user: ${dbUser.username}`);
         } catch (migrationErr) {
@@ -7511,7 +7793,7 @@ var AuthService = class {
    */
   static getUserDetails(userId) {
     try {
-      const allUsers = database_default.prepare(`SELECT id, username, name, role, title, staff_code, branch, start_date, contract_type, contract_sign_date, salary, bonus, avatar, phone, email, dob, gender, address, case_id, practice_areas FROM users`).all();
+      const allUsers = database_default.prepare(`SELECT id, username, name, role, title, staff_code, branch, start_date, contract_type, contract_sign_date, salary, bonus, avatar, phone, email, dob, gender, address, case_id, practice_areas, account_type FROM users`).all();
       const enriched = enrichUsersWithStaffCode(allUsers);
       const user = enriched.find((u) => u.id === userId);
       return user || null;
@@ -7537,7 +7819,7 @@ var AuthService = class {
     }
     let isValid = false;
     if (dbUser.password && (dbUser.password.startsWith("$2b$") || dbUser.password.startsWith("$2a$"))) {
-      isValid = import_bcrypt.default.compareSync(currentPassword, dbUser.password);
+      isValid = import_bcrypt2.default.compareSync(currentPassword, dbUser.password);
     } else {
       isValid = dbUser.password === currentPassword;
     }
@@ -7545,8 +7827,8 @@ var AuthService = class {
       return { success: false, message: "M\u1EADt kh\u1EA9u hi\u1EC7n t\u1EA1i kh\xF4ng ch\xEDnh x\xE1c" };
     }
     try {
-      const hashedNewPassword = import_bcrypt.default.hashSync(newPassword, 10);
-      database_default.prepare("UPDATE users SET password = ? WHERE id = ?").run(hashedNewPassword, userId);
+      const hashedNewPassword = import_bcrypt2.default.hashSync(newPassword, 10);
+      database_default.prepare("UPDATE users SET password = ?, known_devices = ?, login_failures = 0, locked_until = NULL WHERE id = ?").run(hashedNewPassword, "[]", userId);
       return { success: true, message: "\u0110\u1ED5i m\u1EADt kh\u1EA9u th\xE0nh c\xF4ng" };
     } catch (err) {
       console.error("[AuthService] Error updating password in database:", err);
@@ -7580,10 +7862,16 @@ var handleLogin = (req, res) => {
   if (!dbUser) {
     return res.status(401).json({ success: false, message: "T\xEAn \u0111\u0103ng nh\u1EADp ho\u1EB7c m\u1EADt kh\u1EA9u kh\xF4ng \u0111\xFAng" });
   }
+  const loginLock = AuthService.getLoginLock(dbUser);
+  if (loginLock.locked) {
+    return res.status(423).json({ success: false, message: `T\xE0i kho\u1EA3n \u0111ang t\u1EA1m kh\xF3a. Vui l\xF2ng th\u1EED l\u1EA1i sau ${loginLock.retryAfterSeconds} gi\xE2y.` });
+  }
   const isValid = AuthService.verifyAndMigratePassword(password, dbUser);
   if (!isValid) {
+    AuthService.recordFailedLogin(dbUser);
     return res.status(401).json({ success: false, message: "T\xEAn \u0111\u0103ng nh\u1EADp ho\u1EB7c m\u1EADt kh\u1EA9u kh\xF4ng \u0111\xFAng" });
   }
+  AuthService.clearFailedLogins(dbUser.id);
   const { isNewDevice } = AuthService.handleDeviceVerification(dbUser.id, deviceId, dbUser.known_devices);
   const user = AuthService.getUserDetails(dbUser.id);
   if (!user) {
@@ -7651,7 +7939,7 @@ function logAction(user, action) {
 }
 
 // src/modules/users/users.routes.ts
-var import_bcrypt2 = __toESM(require("bcrypt"), 1);
+var import_bcrypt3 = __toESM(require("bcrypt"), 1);
 init_role();
 init_firestore_sync();
 
@@ -7691,9 +7979,248 @@ function normalizeBranchName(value) {
   return aliases[branch] || branch;
 }
 
-// src/application/services/sharedDirectory.service.ts
+// src/domain/shared/sharedDirectory.repository.ts
 init_database();
+var userDirectoryFields = `id, username, name, role, title, staff_code, branch, start_date,
+  contract_type, contract_sign_date, salary, bonus, avatar, phone, email, dob, gender,
+  address, case_id, manager_id, practice_areas`;
+var SharedDirectoryRepository = class {
+  static listPersonnel(roleFilters = ["1 = 1"]) {
+    return database_default.prepare(`
+      SELECT id, username, name, role, title, staff_code, branch, phone, email,
+             manager_id, practice_areas, account_type
+      FROM users
+      WHERE ${roleFilters.join(" AND ")}
+      ORDER BY name COLLATE NOCASE ASC
+    `).all();
+  }
+  static listStaffPage(cursorId, limitPlusOne) {
+    const params = { limitPlusOne };
+    let query2 = `
+      SELECT id, username, name, role, title, staff_code, branch, start_date,
+             contract_type, salary, bonus, avatar, phone, email, dob, gender,
+             address, manager_id, practice_areas
+      FROM users
+      WHERE role != 'client'
+    `;
+    if (cursorId !== void 0) {
+      query2 += " AND id < :cursorId";
+      params.cursorId = cursorId;
+    }
+    query2 += " ORDER BY id DESC LIMIT :limitPlusOne";
+    return database_default.prepare(query2).all(params);
+  }
+  static listStaff() {
+    return database_default.prepare(`
+      SELECT id, username, name, role, title, staff_code, branch, start_date,
+             contract_type, salary, bonus, avatar, phone, email, dob, gender,
+             address, manager_id, practice_areas
+      FROM users
+      WHERE role != 'client'
+      ORDER BY id DESC
+    `).all();
+  }
+  static listAdmins() {
+    return database_default.prepare(`
+      SELECT ${userDirectoryFields}
+      FROM users
+      WHERE role = 'admin' OR username = 'admin'
+      ORDER BY id ASC
+    `).all();
+  }
+  static listAccountsPage(cursorId, limitPlusOne) {
+    const params = { limitPlusOne };
+    let query2 = `SELECT ${userDirectoryFields} FROM users`;
+    if (cursorId !== void 0) {
+      query2 += " WHERE id < :cursorId";
+      params.cursorId = cursorId;
+    }
+    query2 += " ORDER BY id DESC LIMIT :limitPlusOne";
+    return database_default.prepare(query2).all(params);
+  }
+  static listAccounts() {
+    return database_default.prepare(`SELECT ${userDirectoryFields} FROM users ORDER BY id DESC`).all();
+  }
+  static listGatewayUsers() {
+    return database_default.prepare("SELECT id, name, username, role FROM users LIMIT 50").all();
+  }
+  static listAttendanceTargets(role) {
+    if (role && role !== "All") {
+      return database_default.prepare("SELECT id, username, name, role, staff_code FROM users WHERE role = ?").all(role);
+    }
+    return database_default.prepare("SELECT id, username, name, role, staff_code FROM users").all();
+  }
+  static listOffices() {
+    return database_default.prepare(`
+      SELECT id, name, short_name, region, address, phone, email, map_url,
+             is_headquarters, latitude, longitude
+      FROM offices
+      ORDER BY is_headquarters DESC, id ASC
+    `).all();
+  }
+  static listOfficeFormOptions() {
+    return database_default.prepare(`
+      SELECT id, name, address, phone
+      FROM offices
+      ORDER BY name ASC
+    `).all();
+  }
+  static listPersonnelFormOptions() {
+    return database_default.prepare(`
+      SELECT id, username, name, role, title, manager_id
+      FROM users
+      WHERE role != 'client'
+      ORDER BY name ASC
+    `).all();
+  }
+  static getOfficeName(id) {
+    const row = database_default.prepare("SELECT name FROM offices WHERE id = ?").get(id);
+    return row?.name || null;
+  }
+  static getUserSummary(id) {
+    return database_default.prepare("SELECT name, username FROM users WHERE id = ?").get(id);
+  }
+  static listOfficeNames() {
+    return database_default.prepare("SELECT name FROM offices").all();
+  }
+  static listClientsPage(cursorId, limitPlusOne) {
+    const params = { limitPlusOne };
+    let query2 = `SELECT id, username, name, phone, email, address, role
+                 FROM users WHERE role = 'client'`;
+    if (cursorId !== void 0) {
+      query2 += " AND id < :cursorId";
+      params.cursorId = cursorId;
+    }
+    query2 += " ORDER BY id DESC LIMIT :limitPlusOne";
+    return database_default.prepare(query2).all(params);
+  }
+  static listClients() {
+    return database_default.prepare(`
+      SELECT id, username, name, phone, email, address, role, branch, manager_id, case_id
+      FROM users
+      WHERE role = 'client' OR account_type = 'CUSTOMER'
+      ORDER BY id DESC
+    `).all();
+  }
+  static listPartners() {
+    return database_default.prepare(`
+      SELECT id, username, name, phone, email, address, role, branch, manager_id, case_id
+      FROM users
+      WHERE role = 'partner' OR account_type = 'PARTNER'
+      ORDER BY id DESC
+    `).all();
+  }
+  static createClient(name, phone) {
+    database_default.prepare(`
+      INSERT INTO users (username, password, name, phone, role)
+      VALUES (?, ?, ?, ?, 'client')
+    `).run(phone, "Abcd@12345", name, phone);
+  }
+  static createOffice(input) {
+    const result = database_default.prepare(`
+      INSERT INTO offices (name, short_name, region, address, phone, email, map_url,
+                           is_headquarters, latitude, longitude)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.name ?? null,
+      input.short_name ?? null,
+      input.region ?? null,
+      input.address ?? null,
+      input.phone ?? null,
+      input.email ?? null,
+      input.map_url ?? null,
+      input.is_headquarters ? 1 : 0,
+      input.latitude ?? null,
+      input.longitude ?? null
+    );
+    return Number(result.lastInsertRowid);
+  }
+  static clearHeadquarters(exceptId) {
+    if (exceptId === void 0) {
+      database_default.prepare("UPDATE offices SET is_headquarters = 0").run();
+      return;
+    }
+    database_default.prepare("UPDATE offices SET is_headquarters = 0 WHERE id != ?").run(exceptId);
+  }
+  static updateOffice(id, input) {
+    database_default.prepare(`
+      UPDATE offices
+      SET name=?, short_name=?, region=?, address=?, phone=?, email=?, map_url=?,
+          is_headquarters=?, latitude=?, longitude=?
+      WHERE id=?
+    `).run(
+      input.name ?? null,
+      input.short_name ?? null,
+      input.region ?? null,
+      input.address ?? null,
+      input.phone ?? null,
+      input.email ?? null,
+      input.map_url ?? null,
+      input.is_headquarters ? 1 : 0,
+      input.latitude ?? null,
+      input.longitude ?? null,
+      id
+    );
+  }
+  static deleteOffice(id) {
+    database_default.prepare("DELETE FROM offices WHERE id=?").run(id);
+  }
+};
+
+// src/application/services/sharedDirectory.service.ts
 var SharedDirectoryService = class {
+  static getOfficeName(id) {
+    return SharedDirectoryRepository.getOfficeName(id);
+  }
+  static getUserSummary(id) {
+    return SharedDirectoryRepository.getUserSummary(id);
+  }
+  static listOfficeNames() {
+    return SharedDirectoryRepository.listOfficeNames();
+  }
+  static listOfficeFormOptions() {
+    return SharedDirectoryRepository.listOfficeFormOptions();
+  }
+  static listPersonnelFormOptions() {
+    return SharedDirectoryRepository.listPersonnelFormOptions();
+  }
+  static listAccountsPage(cursorId, limitPlusOne) {
+    return SharedDirectoryRepository.listAccountsPage(cursorId, limitPlusOne);
+  }
+  static listAccounts() {
+    return SharedDirectoryRepository.listAccounts();
+  }
+  static listGatewayUsers() {
+    return SharedDirectoryRepository.listGatewayUsers();
+  }
+  static listAttendanceTargets(role) {
+    return SharedDirectoryRepository.listAttendanceTargets(role);
+  }
+  static listAdmins() {
+    const admins = SharedDirectoryRepository.listAdmins();
+    return enrichUsersWithStaffCode(admins).map((admin) => ({
+      ...admin,
+      branch: normalizeBranchName(admin.branch)
+    }));
+  }
+  static listStaffPage(cursorId, limitPlusOne) {
+    return SharedDirectoryRepository.listStaffPage(cursorId, limitPlusOne);
+  }
+  static listStaff() {
+    return SharedDirectoryRepository.listStaff();
+  }
+  static listClientsPage(cursorId, limitPlusOne) {
+    return SharedDirectoryRepository.listClientsPage(cursorId, limitPlusOne);
+  }
+  static listClients() {
+    return SharedDirectoryRepository.listClients();
+  }
+  static listPartners() {
+    return SharedDirectoryRepository.listPartners();
+  }
+  static createClient(name, phone) {
+    SharedDirectoryRepository.createClient(name, phone);
+  }
   static listPersonnel(options = {}) {
     const roleFilters = ["1 = 1"];
     if (!options.includeClients) roleFilters.push("role != 'client'");
@@ -7702,13 +8229,7 @@ var SharedDirectoryService = class {
       roleFilters.push("role != 'admin'");
       roleFilters.push("COALESCE(username, '') != 'admin'");
     }
-    const rows = database_default.prepare(`
-      SELECT id, username, name, role, title, staff_code, branch, phone, email,
-             manager_id, practice_areas, account_type
-      FROM users
-      WHERE ${roleFilters.join(" AND ")}
-      ORDER BY name COLLATE NOCASE ASC
-    `).all();
+    const rows = SharedDirectoryRepository.listPersonnel(roleFilters);
     const enriched = enrichUsersWithStaffCode(rows);
     const normalized = enriched.map((personnel) => ({
       ...personnel,
@@ -7719,12 +8240,19 @@ var SharedDirectoryService = class {
     return normalized.filter((personnel) => personnel.branch === branch);
   }
   static listOffices() {
-    return database_default.prepare(`
-      SELECT id, name, short_name, region, address, phone, email, map_url,
-             is_headquarters, latitude, longitude
-      FROM offices
-      ORDER BY is_headquarters DESC, id ASC
-    `).all();
+    return SharedDirectoryRepository.listOffices();
+  }
+  static clearHeadquarters(exceptId) {
+    SharedDirectoryRepository.clearHeadquarters(exceptId);
+  }
+  static createOffice(input) {
+    return SharedDirectoryRepository.createOffice(input);
+  }
+  static updateOffice(id, input) {
+    SharedDirectoryRepository.updateOffice(id, input);
+  }
+  static deleteOffice(id) {
+    SharedDirectoryRepository.deleteOffice(id);
   }
 };
 
@@ -7788,7 +8316,6 @@ router2.get("/employees", auth2, (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-var userDirectoryFields = `id, username, name, role, title, staff_code, branch, start_date, contract_type, contract_sign_date, salary, bonus, avatar, phone, email, dob, gender, address, case_id, manager_id, practice_areas`;
 router2.get("/users/employees", auth2, (req, res) => {
   try {
     const employees = SharedDirectoryService.listPersonnel({
@@ -7801,16 +8328,7 @@ router2.get("/users/employees", auth2, (req, res) => {
 });
 router2.get("/users/admins", canManageUsers, (req, res) => {
   try {
-    const admins = database_default.prepare(`
-      SELECT ${userDirectoryFields}
-      FROM users
-      WHERE role = 'admin' OR username = 'admin'
-      ORDER BY id ASC
-    `).all();
-    res.json(enrichUsersWithStaffCode(admins).map((admin) => ({
-      ...admin,
-      branch: normalizeBranchName(admin.branch)
-    })));
+    res.json(SharedDirectoryService.listAdmins());
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -7820,18 +8338,14 @@ router2.get("/users", auth2, (req, res) => {
     const limit2 = req.query.limit ? Math.min(100, Math.max(1, parseInt(req.query.limit) || 20)) : null;
     const cursorStr = req.query.cursor;
     if (limit2 !== null) {
-      const params = {};
-      let query2 = `SELECT ${userDirectoryFields} FROM users`;
+      let cursorId;
       if (cursorStr) {
         const cursor = decodeCursor(cursorStr);
         if (cursor && cursor.id) {
-          query2 += ` WHERE id < :cursorId`;
-          params.cursorId = cursor.id;
+          cursorId = cursor.id;
         }
       }
-      query2 += ` ORDER BY id DESC LIMIT :limitPlusOne`;
-      params.limitPlusOne = limit2 + 1;
-      const rows = database_default.prepare(query2).all(params);
+      const rows = SharedDirectoryService.listAccountsPage(cursorId, limit2 + 1);
       const hasNextPage = rows.length > limit2;
       const returnedRows = hasNextPage ? rows.slice(0, limit2) : rows;
       let nextCursor = null;
@@ -7852,7 +8366,7 @@ router2.get("/users", auth2, (req, res) => {
         }
       });
     } else {
-      const users = database_default.prepare(`SELECT ${userDirectoryFields} FROM users ORDER BY id DESC`).all();
+      const users = SharedDirectoryService.listAccounts();
       const enriched = enrichUsersWithStaffCode(users).map((user) => ({
         ...user,
         branch: normalizeBranchName(user.branch)
@@ -7885,7 +8399,7 @@ router2.post("/users/bulk-add", canManageUsers, async (req, res) => {
         const password = String(item?.password || "Abcd@12345");
         const result = insert.run(
           username,
-          import_bcrypt2.default.hashSync(password, 10),
+          import_bcrypt3.default.hashSync(password, 10),
           name,
           role,
           item?.title || "",
@@ -7914,6 +8428,11 @@ router2.post("/users/bulk-add", canManageUsers, async (req, res) => {
 router2.post("/users", canManageUsers, async (req, res) => {
   try {
     const data = req.body;
+    const requestedUsername = String(data.username || "").trim().toLowerCase();
+    const requestedRole = mapRoleToDb(data.role);
+    if (requestedUsername === "admin" || requestedRole === "admin") {
+      return res.status(403).json({ error: "T\xE0i kho\u1EA3n Admin t\u1ED1i cao ch\u1EC9 \u0111\u01B0\u1EE3c h\u1EC7 th\u1ED1ng kh\xF4i ph\u1EE5c t\u1EF1 \u0111\u1ED9ng, kh\xF4ng th\u1EC3 t\u1EA1o th\u1EE7 c\xF4ng." });
+    }
     if (data.password) {
       const passwordError = validatePassword(data.password);
       if (passwordError) {
@@ -7940,7 +8459,7 @@ router2.post("/users", canManageUsers, async (req, res) => {
         values.push("?");
         let val2 = data[field];
         if (field === "password" && val2) {
-          val2 = import_bcrypt2.default.hashSync(val2.toString(), 10);
+          val2 = import_bcrypt3.default.hashSync(val2.toString(), 10);
         }
         params.push(val2);
       }
@@ -7979,6 +8498,9 @@ router2.put("/users/:id", auth2, async (req, res) => {
     const data = req.body;
     const targetUser = database_default.prepare(`SELECT username, role FROM users WHERE id=?`).get(userId);
     if (targetUser && (targetUser.username === "admin" || targetUser.role === "admin")) {
+      if (currentUser.id.toString() !== userId) {
+        return res.status(403).json({ error: "Ch\u1EC9 t\xE0i kho\u1EA3n Admin t\u1ED1i cao m\u1EDBi \u0111\u01B0\u1EE3c t\u1EF1 c\u1EADp nh\u1EADt th\xF4ng tin b\u1EA3o m\u1EADt c\u1EE7a ch\xEDnh t\xE0i kho\u1EA3n n\xE0y" });
+      }
       if (data.username !== void 0 && data.username !== "admin") {
         return res.status(403).json({ error: "Cannot change system administrator username" });
       }
@@ -8023,7 +8545,7 @@ router2.put("/users/:id", auth2, async (req, res) => {
         if (field === "password") {
           if (!data[field]) continue;
           updates.push(`${field}=?`);
-          params.push(import_bcrypt2.default.hashSync(data[field].toString(), 10));
+          params.push(import_bcrypt3.default.hashSync(data[field].toString(), 10));
         } else {
           updates.push(`${field}=?`);
           params.push(data[field]);
@@ -8059,7 +8581,11 @@ router2.post("/users/:id/reset_account", auth2, async (req, res) => {
       return res.status(403).json({ error: "permission denied" });
     }
     const defaultPassword = "Abcd@12345";
-    const hashedPassword = import_bcrypt2.default.hashSync(defaultPassword, 10);
+    const targetUser = database_default.prepare("SELECT username, role FROM users WHERE id = ?").get(userId);
+    if (targetUser?.username === "admin" || mapRoleToDb(targetUser?.role) === "admin") {
+      return res.status(403).json({ error: "Kh\xF4ng th\u1EC3 reset c\u01B0\u1EE1ng b\u1EE9c t\xE0i kho\u1EA3n Admin t\u1ED1i cao; h\xE3y \u0111\u1ED5i m\u1EADt kh\u1EA9u sau khi \u0111\u0103ng nh\u1EADp." });
+    }
+    const hashedPassword = import_bcrypt3.default.hashSync(defaultPassword, 10);
     database_default.prepare("UPDATE users SET password = ?, known_devices = ? WHERE id = ?").run(hashedPassword, "[]", userId);
     await syncRowToFirestore("users", userId);
     try {
@@ -8095,13 +8621,11 @@ var users_routes_default = router2;
 
 // src/modules/clients/clients.routes.ts
 var import_express3 = require("express");
-init_database();
 var router3 = (0, import_express3.Router)();
 router3.post("/client", auth2, (req, res) => {
   const { name, phone } = req.body;
   try {
-    const stmt = database_default.prepare(`INSERT INTO users (username, password, name, phone, role) VALUES (?, ?, ?, ?, 'client')`);
-    stmt.run(phone, "Abcd@12345", name, phone);
+    SharedDirectoryService.createClient(name ?? null, phone ?? null);
     res.json({ success: true });
   } catch (error) {
     if (error.message.includes("UNIQUE constraint failed")) {
@@ -8116,18 +8640,14 @@ router3.get("/clients", auth2, (req, res) => {
     const limit2 = req.query.limit ? Math.min(100, Math.max(1, parseInt(req.query.limit) || 20)) : null;
     const cursorStr = req.query.cursor;
     if (limit2 !== null) {
-      const params = {};
-      let query2 = `SELECT id, username, name, phone, email, address, role FROM users WHERE role = 'client'`;
+      let cursorId;
       if (cursorStr) {
         const cursor = decodeCursor(cursorStr);
         if (cursor && cursor.id) {
-          query2 += ` AND id < :cursorId`;
-          params.cursorId = cursor.id;
+          cursorId = cursor.id;
         }
       }
-      query2 += ` ORDER BY id DESC LIMIT :limitPlusOne`;
-      params.limitPlusOne = limit2 + 1;
-      const rows = database_default.prepare(query2).all(params);
+      const rows = SharedDirectoryService.listClientsPage(cursorId, limit2 + 1);
       const hasNextPage = rows.length > limit2;
       const returnedRows = hasNextPage ? rows.slice(0, limit2) : rows;
       let nextCursor = null;
@@ -8144,7 +8664,7 @@ router3.get("/clients", auth2, (req, res) => {
         }
       });
     } else {
-      const clients = database_default.prepare(`SELECT id, username, name, phone, email, address, role, branch, manager_id, case_id FROM users WHERE role = 'client' OR account_type = 'CUSTOMER' ORDER BY id DESC`).all();
+      const clients = SharedDirectoryService.listClients();
       res.json(clients);
     }
   } catch (error) {
@@ -8153,7 +8673,7 @@ router3.get("/clients", auth2, (req, res) => {
 });
 router3.get("/partners", auth2, (req, res) => {
   try {
-    const partners = database_default.prepare(`SELECT id, username, name, phone, email, address, role, branch, manager_id, case_id FROM users WHERE role = 'partner' OR account_type = 'PARTNER' ORDER BY id DESC`).all();
+    const partners = SharedDirectoryService.listPartners();
     res.json(partners);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -8629,7 +9149,7 @@ var PaymentScheduleEngine = class {
 var paymentScheduleEngine = new PaymentScheduleEngine();
 
 // src/modules/payment/payment.service.ts
-init_database();
+init_SystemDataAccess();
 var PaymentService = class {
   /**
    * Initializes or updates Payment & Payment Schedules when a Case is created or updated in ERP
@@ -8688,9 +9208,8 @@ var PaymentService = class {
   processPublicCaseQrScan(token, baseUrl = "") {
     const caseId = paymentRepository.findCaseByQrToken(token);
     if (!caseId) {
-      const erpRow2 = database_default.prepare("SELECT data FROM erp_records WHERE id = ? OR data LIKE ?").get(token, `%${token}%`);
-      if (erpRow2) {
-        const parsed = JSON.parse(erpRow2.data);
+      const parsed = SystemDataAccess.findRecordByToken(token);
+      if (parsed) {
         return {
           found: true,
           caseDetails: parsed,
@@ -8699,8 +9218,7 @@ var PaymentService = class {
       }
       return { found: false, message: "M\xE3 QR kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c \u0111\xE3 h\u1EBFt h\u1EA1n" };
     }
-    const erpRow = database_default.prepare("SELECT data FROM erp_records WHERE id = ?").get(caseId);
-    const caseDetails = erpRow ? JSON.parse(erpRow.data) : { id: caseId, title: "H\u1ED3 s\u01A1 v\u1EE5 vi\u1EC7c" };
+    const caseDetails = SystemDataAccess.getRecordById(caseId) || { id: caseId, title: "H\u1ED3 s\u01A1 v\u1EE5 vi\u1EC7c" };
     const paymentEval = qrEngine.evaluateCaseQrScan(caseId, baseUrl);
     paymentEventBus.publish({
       eventType: "QRScanned" /* QRScanned */,
@@ -8742,6 +9260,86 @@ var createActivityLog = async (payload) => {
   }
 };
 
+// src/utils/clientRecordLink.ts
+function normalizeClientMatchValue(value) {
+  return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").replace(/\s+/g, "").trim().toLowerCase();
+}
+function matchesClientRecord(record, user) {
+  if (!record || !user) return false;
+  const candidateFields = [
+    record.client,
+    record.clientName,
+    record.client_name,
+    record.contractDetails?.requesterName,
+    record.contractDetails?.customerName,
+    record.contractDetails?.obligorName,
+    record.clientIdCard,
+    record.taxCode,
+    record.taxId,
+    record.contractDetails?.customerTaxCode,
+    record.contractDetails?.obligorTaxCode,
+    record.contractDetails?.customerBusinessId,
+    record.contractDetails?.obligorBusinessId,
+    record.contractDetails?.requesterIdCard,
+    record.contractDetails?.customerIdCard,
+    record.contractDetails?.obligorIdCard,
+    record.clientPhone,
+    record.contractDetails?.requesterPhone,
+    record.contractDetails?.customerPhone,
+    record.contractDetails?.obligorPhone,
+    record.systemId,
+    record.id,
+    record.contractId,
+    record.authContractId
+  ];
+  const normalizedUserName = normalizeClientMatchValue(user.name || user.username);
+  const normalizedUserUsername = normalizeClientMatchValue(user.username);
+  const normalizedUserPhone = normalizeClientMatchValue(user.phone || user.mobile);
+  const normalizedCaseId = normalizeClientMatchValue(user.case_id);
+  const normalizedUserTaxId = normalizeClientMatchValue(user.taxCode || user.tax_id || user.taxId || user.businessId || user.mst);
+  const exactMatches = candidateFields.map((field) => normalizeClientMatchValue(field)).filter(Boolean);
+  const userMatches = [
+    normalizedUserName,
+    normalizedUserUsername,
+    normalizedUserPhone,
+    normalizedCaseId,
+    normalizedUserTaxId
+  ].filter(Boolean);
+  if (userMatches.length === 0) return false;
+  const userCaseMatches = [
+    String(record.id || ""),
+    String(record.systemId || ""),
+    String(record.contractId || ""),
+    String(record.authContractId || "")
+  ].map((value) => normalizeClientMatchValue(value));
+  if (userCaseMatches.includes(normalizedCaseId) && normalizedCaseId) return true;
+  for (const field of exactMatches) {
+    if (userMatches.includes(field)) return true;
+  }
+  const listMatches = [
+    normalizeClientMatchValue(record.client),
+    normalizeClientMatchValue(record.contractDetails?.requesterName),
+    normalizeClientMatchValue(record.contractDetails?.customerName),
+    normalizeClientMatchValue(record.contractDetails?.obligorName)
+  ].filter(Boolean);
+  if (normalizedUserName && listMatches.some((value) => value === normalizedUserName)) return true;
+  if (normalizedUserPhone && [
+    normalizeClientMatchValue(record.clientPhone),
+    normalizeClientMatchValue(record.contractDetails?.requesterPhone),
+    normalizeClientMatchValue(record.contractDetails?.customerPhone),
+    normalizeClientMatchValue(record.contractDetails?.obligorPhone)
+  ].includes(normalizedUserPhone)) return true;
+  if (normalizedUserTaxId && [
+    normalizeClientMatchValue(record.taxCode),
+    normalizeClientMatchValue(record.taxId),
+    normalizeClientMatchValue(record.contractDetails?.customerTaxCode),
+    normalizeClientMatchValue(record.contractDetails?.obligorTaxCode),
+    normalizeClientMatchValue(record.contractDetails?.customerBusinessId),
+    normalizeClientMatchValue(record.contractDetails?.obligorBusinessId)
+  ].includes(normalizedUserTaxId)) return true;
+  return false;
+}
+
 // src/modules/cases/cases.routes.ts
 function decodeCursor2(str) {
   try {
@@ -8752,6 +9350,21 @@ function decodeCursor2(str) {
   }
 }
 var router4 = (0, import_express4.Router)();
+function filterRecordsForUser(records, currentUser) {
+  if (!currentUser || !Array.isArray(records)) return records;
+  const roleName = String(currentUser.role || "").toLowerCase();
+  const mappedRole = mapRoleToDb(currentUser.role);
+  const canViewAll = ["admin", "director", "deputyDirector", "controller"].includes(mappedRole) || roleName === "admin";
+  if (canViewAll) return records;
+  const accountType = String(currentUser.account_type || currentUser.accountType || "").toUpperCase();
+  const isExternalUser = accountType === "CUSTOMER" || accountType === "PARTNER" || roleName === "client" || roleName === "customer" || roleName === "partner" || roleName === "khach hang" || roleName === "doi tac";
+  if (isExternalUser) {
+    return records.filter((record) => {
+      return matchesClientRecord(record, currentUser);
+    });
+  }
+  return records;
+}
 router4.get("/internal-messages/:id", auth2, requireResourceAccess("chat", "id"), (req, res) => {
   try {
     const messages = database_default.prepare("SELECT * FROM record_messages WHERE record_id = ? ORDER BY created_at ASC").all(req.params.id);
@@ -8820,7 +9433,7 @@ var createCaseHandler = async (req, res) => {
   const userRole = currentUser?.role;
   const mappedRole = mapRoleToDb(userRole);
   const p = database_default.prepare(`SELECT editAllRecords, editPersonalRecords FROM role_permissions WHERE role=?`).get(mappedRole);
-  const canCreate = p?.editAllRecords || p?.editPersonalRecords || ["admin", "director", "deputyDirector", "controller", "lawyer", "legal_assistant"].includes(mappedRole) || true;
+  const canCreate = !!p?.editAllRecords || !!p?.editPersonalRecords || ["admin", "director", "deputyDirector", "controller", "lawyer", "legal_assistant"].includes(mappedRole);
   if (!canCreate) {
     return res.status(403).json({ error: "B\u1EA1n kh\xF4ng c\xF3 quy\u1EC1n t\u1EA1o h\u1ED3 s\u01A1 v\u1EE5 \xE1n m\u1EDBi" });
   }
@@ -8958,7 +9571,8 @@ router4.delete("/record-types/:id", requirePermission("manageWeb"), (req, res) =
 });
 router4.get("/erp-records/all", auth2, (req, res) => {
   try {
-    const records = SystemDataAccess.getAllRecords();
+    const currentUser = req.user || req.session?.user;
+    const records = filterRecordsForUser(SystemDataAccess.getAllRecords(), currentUser);
     res.json({
       success: true,
       data: records
@@ -8982,7 +9596,7 @@ router4.get("/erp-records", auth2, (req, res) => {
       cursorPayload = decodeCursor2(cursorStr);
     }
     const limitVal = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
-    const { records, nextCursor, hasNextPage } = SystemDataAccess.queryFederated({
+    const { records: federatedRecords, nextCursor, hasNextPage } = SystemDataAccess.queryFederated({
       category: req.query.category,
       search: req.query.q || req.query.search,
       branch: req.query.branch,
@@ -8997,6 +9611,7 @@ router4.get("/erp-records", auth2, (req, res) => {
       limit: limitVal,
       cursorPayload
     });
+    const records = filterRecordsForUser(federatedRecords, req.user || req.session?.user);
     res.json({
       success: true,
       data: records,
@@ -9011,8 +9626,10 @@ router4.get("/erp-records", auth2, (req, res) => {
     res.status(500).json({ error: "Server error: " + e.message });
   }
 });
-router4.get("/erp-records/detail", (req, res) => {
+router4.get("/erp-records/detail", auth2, (req, res) => {
   try {
+    const currentUser = req.user || req.session?.user || null;
+    const isClient = currentUser && String(currentUser.role || "").toLowerCase() === "client";
     const id = req.query.id;
     console.log("QR Lookup for id:", id);
     if (!id) return res.status(400).json({ error: "Missing id" });
@@ -9027,7 +9644,12 @@ router4.get("/erp-records/detail", (req, res) => {
     for (const row of rows) {
       if (!row.data) continue;
       const parsed = JSON.parse(row.data);
-      if (normalize(parsed.id) === searchId || normalize(parsed.systemId) === searchId || normalize(parsed.contractId) === searchId || normalize(parsed.authContractId) === searchId || normalize(parsed.clientIdCard) === searchId || normalize(parsed.contractDetails?.customerIdCard) === searchId || normalize(parsed.contractDetails?.obligorIdCard) === searchId || parsed.id === id || parsed.systemId === id || parsed.contractId === id || parsed.clientIdCard === id || parsed.contractDetails?.customerIdCard === id || parsed.contractDetails?.obligorIdCard === id) {
+      const matches = normalize(parsed.id) === searchId || normalize(parsed.systemId) === searchId || normalize(parsed.contractId) === searchId || normalize(parsed.authContractId) === searchId || normalize(parsed.clientIdCard) === searchId || normalize(parsed.contractDetails?.customerIdCard) === searchId || normalize(parsed.contractDetails?.obligorIdCard) === searchId || parsed.id === id || parsed.systemId === id || parsed.contractId === id || parsed.clientIdCard === id || parsed.contractDetails?.customerIdCard === id || parsed.contractDetails?.obligorIdCard === id;
+      if (!matches) continue;
+      if (isClient) {
+        const clientOwned = parsed.client === currentUser.name || parsed.clientIdCard === currentUser.username || parsed.clientPhone === currentUser.phone || String(parsed.id || "") === String(currentUser.case_id || "") || String(parsed.systemId || "") === String(currentUser.case_id || "") || String(parsed.contractId || "") === String(currentUser.case_id || "");
+        if (clientOwned) foundRecords.push(parsed);
+      } else {
         foundRecords.push(parsed);
       }
     }
@@ -9067,6 +9689,10 @@ router4.post("/erp-records", auth2, async (req, res) => {
       status: (data?.status === "TRASHED" ? "\u0110ang x\u1EED l\xFD" : data?.status) || "\u0110ang x\u1EED l\xFD"
     };
     const existing = SystemDataAccess.getRecordById(recordId);
+    const legacyExisting = database_default.prepare("SELECT id FROM erp_records WHERE id = ?").get(recordId);
+    if (req.body?.createOnly && (existing || legacyExisting)) {
+      return res.status(409).json({ error: "M\xE3 h\u1ED3 s\u01A1 \u0111\xE3 t\u1ED3n t\u1EA1i. H\u1ED3 s\u01A1 m\u1EDBi kh\xF4ng \u0111\u01B0\u1EE3c ghi \u0111\xE8 h\u1ED3 s\u01A1 c\u0169." });
+    }
     if (!existing && !canEditAll && !canEditPersonal) {
       return res.status(403).json({ error: "B\u1EA1n kh\xF4ng c\xF3 quy\u1EC1n t\u1EA1o m\u1EDBi h\u1ED3 s\u01A1" });
     }
@@ -9188,13 +9814,15 @@ router4.post("/erp-records", auth2, async (req, res) => {
       }
     } catch (ioErr) {
     }
-    try {
-      await syncRowToFirestore("cases", id);
-      const domain = mapCategoryToDomain(data.category || data.practice_area);
-      await syncRowToFirestore(`${domain}_cases`, id);
-    } catch (fsErr) {
-      console.error("Error syncing to Firestore:", fsErr);
-    }
+    void (async () => {
+      try {
+        await syncRowToFirestore("cases", id);
+        const domain = mapCategoryToDomain(data.category || data.practice_area);
+        await syncRowToFirestore(`${domain}_cases`, id);
+      } catch (fsErr) {
+        console.warn("Deferred Firestore sync skipped:", fsErr);
+      }
+    })();
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: "Server error" });
@@ -9247,7 +9875,7 @@ var deleteCaseHandler = async (req, res) => {
     const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Ng\u01B0\u1EDDi d\xF9ng";
     const mappedRole = mapRoleToDb(userRole);
     const p = database_default.prepare(`SELECT deleteRecords, editAllRecords FROM role_permissions WHERE role=?`).get(mappedRole);
-    const canDelete = p?.deleteRecords || p?.editAllRecords || mappedRole === "admin" || mappedRole === "director" || mappedRole === "deputyDirector" || mappedRole === "controller" || true;
+    const canDelete = !!p?.deleteRecords || !!p?.editAllRecords || ["admin", "director", "deputyDirector", "controller"].includes(mappedRole);
     if (!canDelete) {
       return res.status(403).json({
         success: false,
@@ -9308,6 +9936,70 @@ var getTrashHandler = async (req, res) => {
 router4.get("/recycle-bin", auth2, getTrashHandler);
 router4.get("/trash", auth2, getTrashHandler);
 router4.get("/trash/records", auth2, getTrashHandler);
+router4.get("/trash/items", auth2, getTrashHandler);
+router4.post("/trash/restore", auth2, async (req, res) => {
+  try {
+    const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Ng\u01B0\u1EDDi d\xF9ng";
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : Array.isArray(req.body?.caseIds) ? req.body.caseIds : [];
+    if (!ids.length) {
+      return res.status(400).json({ success: false, error: "Danh s\xE1ch ID c\u1EA7n kh\xF4i ph\u1EE5c kh\xF4ng h\u1EE3p l\u1EC7." });
+    }
+    const results = [];
+    for (const id of ids) {
+      results.push(await TrashService.restore(String(id), userName));
+    }
+    res.json({ success: true, data: results, message: `Kh\xF4i ph\u1EE5c ${ids.length} m\u1EE5c t\u1EEB th\xF9ng r\xE1c th\xE0nh c\xF4ng.` });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || "Kh\xF4ng th\u1EC3 kh\xF4i ph\u1EE5c m\u1EE5c t\u1EEB th\xF9ng r\xE1c." });
+  }
+});
+router4.delete("/trash/hard-delete", auth2, async (req, res) => {
+  try {
+    const userRole = req.user?.role || req.session?.user?.role;
+    const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Qu\u1EA3n tr\u1ECB vi\xEAn";
+    const mappedRole = mapRoleToDb(userRole);
+    const p = database_default.prepare(`SELECT deleteRecords FROM role_permissions WHERE role=?`).get(mappedRole);
+    const allowed = !!p?.deleteRecords || ["admin", "director", "deputyDirector", "controller"].includes(mappedRole);
+    if (!allowed) {
+      return res.status(403).json({ success: false, error: "Ch\u1EC9 Qu\u1EA3n tr\u1ECB vi\xEAn, Ban Gi\xE1m \u0111\u1ED1c ho\u1EB7c Ki\u1EC3m so\xE1t vi\xEAn m\u1EDBi c\xF3 quy\u1EC1n x\xF3a v\u0129nh vi\u1EC5n d\u1EEF li\u1EC7u." });
+    }
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : Array.isArray(req.body?.caseIds) ? req.body.caseIds : [];
+    if (!ids.length) {
+      return res.status(400).json({ success: false, error: "Danh s\xE1ch ID c\u1EA7n x\xF3a v\u0129nh vi\u1EC5n kh\xF4ng h\u1EE3p l\u1EC7." });
+    }
+    const failedIds = [];
+    for (const id of ids) {
+      const deleted = await TrashService.permanentDelete(String(id), userName);
+      if (!deleted) failedIds.push(String(id));
+    }
+    if (failedIds.length > 0) {
+      return res.status(409).json({
+        success: false,
+        error: `Kh\xF4ng th\u1EC3 x\xE1c nh\u1EADn x\xF3a v\u0129nh vi\u1EC5n ${failedIds.length} m\u1EE5c trong th\xF9ng r\xE1c.`,
+        failedIds
+      });
+    }
+    res.json({ success: true, message: `\u0110\xE3 x\xF3a v\u0129nh vi\u1EC5n th\xE0nh c\xF4ng ${ids.length} m\u1EE5c.` });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || "Kh\xF4ng th\u1EC3 x\xF3a v\u0129nh vi\u1EC5n m\u1EE5c trong th\xF9ng r\xE1c." });
+  }
+});
+router4.delete("/trash/empty", auth2, async (req, res) => {
+  try {
+    const userRole = req.user?.role || req.session?.user?.role;
+    const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Qu\u1EA3n tr\u1ECB vi\xEAn";
+    const mappedRole = mapRoleToDb(userRole);
+    const p = database_default.prepare(`SELECT deleteRecords FROM role_permissions WHERE role=?`).get(mappedRole);
+    const allowed = !!p?.deleteRecords || ["admin", "director", "deputyDirector", "controller"].includes(mappedRole);
+    if (!allowed) {
+      return res.status(403).json({ success: false, error: "B\u1EA1n kh\xF4ng c\xF3 quy\u1EC1n d\u1ECDn s\u1EA1ch th\xF9ng r\xE1c h\u1EC7 th\u1ED1ng." });
+    }
+    const count = await TrashService.emptyTrash(userName);
+    res.json({ success: true, count, message: `\u0110\xE3 d\u1ECDn s\u1EA1ch th\xF9ng r\xE1c. T\u1ED5ng s\u1ED1 m\u1EE5c \u0111\xE3 x\xF3a ho\xE0n to\xE0n: ${count}` });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || "Kh\xF4ng th\u1EC3 d\u1ECDn s\u1EA1ch th\xF9ng r\xE1c." });
+  }
+});
 var restoreCaseHandler = async (req, res) => {
   try {
     const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Ng\u01B0\u1EDDi d\xF9ng";
@@ -9336,7 +10028,7 @@ var permanentDeleteCaseHandler = async (req, res) => {
     const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Qu\u1EA3n tr\u1ECB vi\xEAn";
     const mappedRole = mapRoleToDb(userRole);
     const p = database_default.prepare(`SELECT deleteRecords FROM role_permissions WHERE role=?`).get(mappedRole);
-    const allowed = p?.deleteRecords || ["admin", "director", "deputyDirector", "controller"].includes(mappedRole) || true;
+    const allowed = !!p?.deleteRecords || ["admin", "director", "deputyDirector", "controller"].includes(mappedRole);
     if (!allowed) {
       return res.status(403).json({ error: "Ch\u1EC9 Qu\u1EA3n tr\u1ECB vi\xEAn, Ban Gi\xE1m \u0111\u1ED1c ho\u1EB7c Ki\u1EC3m so\xE1t vi\xEAn m\u1EDBi c\xF3 quy\u1EC1n x\xF3a v\u0129nh vi\u1EC5n d\u1EEF li\u1EC7u." });
     }
@@ -9388,6 +10080,13 @@ router4.delete("/trash/delete-permanent", auth2, async (req, res) => {
 });
 router4.delete("/trash/empty-bin", auth2, async (req, res) => {
   try {
+    const userRole = req.user?.role || req.session?.user?.role;
+    const mappedRole = mapRoleToDb(userRole);
+    const permissions = database_default.prepare(`SELECT deleteRecords FROM role_permissions WHERE role=?`).get(mappedRole);
+    const allowed = !!permissions?.deleteRecords || ["admin", "director", "deputyDirector", "controller"].includes(mappedRole);
+    if (!allowed) {
+      return res.status(403).json({ success: false, error: "Ch\u1EC9 Qu\u1EA3n tr\u1ECB vi\xEAn, Ban Gi\xE1m \u0111\u1ED1c ho\u1EB7c Ki\u1EC3m so\xE1t vi\xEAn m\u1EDBi c\xF3 quy\u1EC1n d\u1ECDn s\u1EA1ch th\xF9ng r\xE1c." });
+    }
     const userName = req.user?.name || req.user?.username || req.session?.user?.name || req.session?.user?.username || "Qu\u1EA3n tr\u1ECB vi\xEAn";
     const count = await TrashService.emptyTrash(userName);
     try {
@@ -9653,8 +10352,8 @@ router4.put("/notifications/read-all", auth2, (req, res) => {
 });
 router4.get("/cases/form-options", auth2, (req, res) => {
   try {
-    const realBranches = database_default.prepare("SELECT id, name, address, phone FROM offices ORDER BY name ASC").all();
-    const realPersonnel = database_default.prepare("SELECT id, username, name, role, title, manager_id FROM users WHERE role != 'client' ORDER BY name ASC").all();
+    const realBranches = SharedDirectoryService.listOfficeFormOptions();
+    const realPersonnel = SharedDirectoryService.listPersonnelFormOptions();
     const formattedBranches = realBranches.map((b) => ({
       value: b.id,
       label: b.name,
@@ -9853,10 +10552,10 @@ router4.post("/cases/save-profile", auth2, async (req, res) => {
     const formattedSeq = String(nextNum).padStart(3, "0");
     const generatedCode = `${prefix}-${currentYear}-${formattedSeq}`;
     const recordId = (0, import_uuid5.v4)();
-    const branchName = database_default.prepare("SELECT name FROM offices WHERE id = ?").get(branchId)?.name || "Chi nh\xE1nh H\xE0 N\u1ED9i";
-    const staffUser = database_default.prepare("SELECT name, username FROM users WHERE id = ?").get(staffId);
+    const branchName = SharedDirectoryService.getOfficeName(branchId) || "Chi nh\xE1nh H\xE0 N\u1ED9i";
+    const staffUser = SharedDirectoryService.getUserSummary(staffId);
     const staffName = staffUser?.name || "Ch\u01B0a ph\xE2n c\xF4ng";
-    const managerUser = managerId ? database_default.prepare("SELECT name FROM users WHERE id = ?").get(managerId) : null;
+    const managerUser = managerId ? SharedDirectoryService.getUserSummary(managerId) : null;
     const managerName = managerUser?.name || "";
     const record = {
       id: recordId,
@@ -9979,7 +10678,7 @@ router4.get("/sync/looker-studio-analytics", (req, res) => {
       if (isActive) domainStatsMap[domain].active++;
       if (isClosed) domainStatsMap[domain].closed++;
     });
-    const offices = database_default.prepare("SELECT name FROM offices").all();
+    const offices = SharedDirectoryService.listOfficeNames();
     const branchStatsMap = {};
     offices.forEach((off) => {
       branchStatsMap[off.name] = { total_cases: 0, revenue: 0 };
@@ -10030,6 +10729,7 @@ var cases_routes_default = router4;
 // src/modules/documents/documents.routes.ts
 var import_express5 = require("express");
 var import_genai = require("@google/genai");
+init_role();
 
 // src/middleware/upload.ts
 var import_multer = __toESM(require("multer"), 1);
@@ -10100,11 +10800,69 @@ async function extractTextFromFile(filePath) {
 var import_fs6 = __toESM(require("fs"), 1);
 var import_path6 = __toESM(require("path"), 1);
 var router5 = (0, import_express5.Router)();
+router5.get("/signed-documents", auth2, (req, res) => {
+  try {
+    const user = req.user || req.session?.user;
+    const isClient = String(user?.role || "").toLowerCase() === "client";
+    const requestedClientId = String(req.query.clientId || "");
+    const ownClientId = String(user?.username || `client_${user?.id || ""}`);
+    const clientId = isClient ? ownClientId : requestedClientId;
+    if (!clientId) return res.json([]);
+    const rows = database_default.prepare(`
+      SELECT id, client_id as clientId, client_name as clientName,
+             template_id as templateId, document_title as documentTitle,
+             document_code as documentCode, signed_url as signedUrl,
+             signed_at as signedAt, ink_color as inkColor, method
+      FROM signed_documents
+      WHERE client_id = ?
+      ORDER BY signed_at DESC
+    `).all(clientId);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to load signed documents" });
+  }
+});
+router5.post("/signed-documents", auth2, (req, res) => {
+  try {
+    const user = req.user || req.session?.user;
+    const payload = req.body || {};
+    const isClient = String(user?.role || "").toLowerCase() === "client";
+    const ownClientId = String(user?.username || `client_${user?.id || ""}`);
+    const clientId = isClient ? ownClientId : String(payload.clientId || "");
+    if (!clientId || !payload.id || !payload.signedUrl) {
+      return res.status(400).json({ error: "Missing signed document data" });
+    }
+    database_default.prepare(`
+      INSERT OR REPLACE INTO signed_documents (
+        id, client_id, client_name, template_id, document_title,
+        document_code, signed_url, signed_at, ink_color, method, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      String(payload.id),
+      clientId,
+      payload.clientName || user?.name || "",
+      payload.templateId || "",
+      payload.documentTitle || "",
+      payload.documentCode || "",
+      payload.signedUrl,
+      payload.signedAt || (/* @__PURE__ */ new Date()).toISOString(),
+      payload.inkColor || "",
+      payload.method || "type",
+      (/* @__PURE__ */ new Date()).toISOString()
+    );
+    res.json({ success: true, id: payload.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to save signed document" });
+  }
+});
 router5.post("/upload", auth2, upload.any(), async (req, res) => {
   const caseId = req.body.caseId;
   const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
   if (!file) return res.status(400).json({ error: "Missing file" });
   if (caseId) {
+    if (!checkResourceAccess(req.user || req.session?.user, "record", String(caseId))) {
+      return res.status(403).json({ error: "B\u1EA1n kh\xF4ng c\xF3 quy\u1EC1n t\u1EA3i t\xE0i li\u1EC7u v\xE0o h\u1ED3 s\u01A1 n\xE0y." });
+    }
     const savedFile = saveFileToNAS(file, caseId);
     const id = (0, import_uuid6.v4)();
     database_default.prepare(`INSERT INTO files (id, case_id, filename, path, is_deleted) VALUES (?,?,?,?,0)`).run(id, caseId, savedFile.filename, savedFile.path);
@@ -10112,6 +10870,11 @@ router5.post("/upload", auth2, upload.any(), async (req, res) => {
     database_default.prepare(`INSERT INTO case_text VALUES (?,?)`).run(id, text);
     return res.json({ success: true, fileId: id, fileUrl: `/api/files/download/${id}` });
   } else {
+    const role = mapRoleToDb(req.user?.role || req.session?.user?.role);
+    const permission = database_default.prepare("SELECT manageWeb FROM role_permissions WHERE role = ?").get(role);
+    if (!permission?.manageWeb && !["admin", "director", "deputyDirector"].includes(role)) {
+      return res.status(403).json({ error: "B\u1EA1n kh\xF4ng c\xF3 quy\u1EC1n t\u1EA3i t\u1EC7p h\u1EC7 th\u1ED1ng." });
+    }
     const uploadDir = process.env.NODE_ENV === "production" ? import_path6.default.join("/tmp", "uploads") : import_path6.default.join(process.cwd(), "uploads");
     if (!import_fs6.default.existsSync(uploadDir)) import_fs6.default.mkdirSync(uploadDir, { recursive: true });
     const safeName = file.originalname ? file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, "_") : "upload.bin";
@@ -10125,11 +10888,11 @@ router5.post("/upload", auth2, upload.any(), async (req, res) => {
     });
   }
 });
-router5.get("/files/:caseId", auth2, (req, res) => {
+router5.get("/files/:caseId", auth2, requireResourceAccess("record", "caseId"), (req, res) => {
   const files = database_default.prepare(`SELECT id, filename FROM files WHERE case_id = ? AND (is_deleted = 0 OR is_deleted IS NULL)`).all(req.params.caseId);
   res.json(files);
 });
-router5.delete("/files/:id", auth2, async (req, res) => {
+router5.delete("/files/:id", auth2, requirePermission("manageLegalDocs"), async (req, res) => {
   try {
     const fileId = req.params.id;
     const fileRow = database_default.prepare(`SELECT * FROM files WHERE id = ?`).get(fileId);
@@ -10184,30 +10947,38 @@ router5.get("/files/download/:id", auth2, (req, res) => {
     if (!fileRow) {
       return res.status(404).json({ error: "File not found" });
     }
-    if (!import_fs6.default.existsSync(fileRow.path)) {
-      return res.status(404).json({ error: "File path on disk not found: " + fileRow.path });
-    }
-    const ext = import_path6.default.extname(fileRow.filename).toLowerCase();
-    let contentType = "application/octet-stream";
-    if (ext === ".pdf") contentType = "application/pdf";
-    else if (ext === ".docx") contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    else if (ext === ".doc") contentType = "application/msword";
-    else if (ext === ".xlsx") contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    else if (ext === ".xls") contentType = "application/vnd.ms-excel";
-    else if (ext === ".txt") contentType = "text/plain; charset=utf-8";
-    else if (ext === ".png") contentType = "image/png";
-    else if (ext === ".jpg" || ext === ".jpeg") contentType = "image/jpeg";
-    res.setHeader("Content-Type", contentType);
-    res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(fileRow.filename)}`);
-    import_fs6.default.createReadStream(fileRow.path).pipe(res);
+    const recordAccess = requireResourceAccess("record", "caseId");
+    req.params.caseId = fileRow.case_id;
+    return recordAccess(req, res, () => {
+      if (!import_fs6.default.existsSync(fileRow.path)) {
+        return res.status(404).json({ error: "File path on disk not found: " + fileRow.path });
+      }
+      const ext = import_path6.default.extname(fileRow.filename).toLowerCase();
+      let contentType = "application/octet-stream";
+      if (ext === ".pdf") contentType = "application/pdf";
+      else if (ext === ".docx") contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      else if (ext === ".doc") contentType = "application/msword";
+      else if (ext === ".xlsx") contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      else if (ext === ".xls") contentType = "application/vnd.ms-excel";
+      else if (ext === ".txt") contentType = "text/plain; charset=utf-8";
+      else if (ext === ".png") contentType = "image/png";
+      else if (ext === ".jpg" || ext === ".jpeg") contentType = "image/jpeg";
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(fileRow.filename)}`);
+      import_fs6.default.createReadStream(fileRow.path).pipe(res);
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 router5.get("/files/text/:id", auth2, (req, res) => {
   try {
-    const row = database_default.prepare(`SELECT content FROM case_text WHERE file_id = ?`).get(req.params.id);
-    res.json({ text: row ? row.content : "" });
+    const row = database_default.prepare(`SELECT ct.content, f.case_id FROM case_text ct JOIN files f ON f.id = ct.file_id WHERE ct.file_id = ?`).get(req.params.id);
+    if (!row) return res.status(404).json({ error: "File text not found" });
+    req.params.caseId = row.case_id;
+    return requireResourceAccess("record", "caseId")(req, res, () => {
+      res.json({ text: row ? row.content : "" });
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -10215,6 +10986,9 @@ router5.get("/files/text/:id", auth2, (req, res) => {
 router5.post("/documents/ai/ask", auth2, async (req, res) => {
   try {
     const { caseId, question } = req.body;
+    if (!caseId || !checkResourceAccess(req.user || req.session?.user, "record", String(caseId))) {
+      return res.status(403).json({ error: "B\u1EA1n kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp h\u1ED3 s\u01A1 n\xE0y." });
+    }
     const rows = database_default.prepare(`
       SELECT content FROM case_text
       JOIN files ON case_text.file_id = files.id
@@ -11235,8 +12009,66 @@ async function executeUnifiedMcpTool(toolName, args, context) {
 }
 
 // src/modules/ai/ai.routes.ts
+init_SystemDataAccess();
+
+// src/modules/ai/ai.gateway.ts
+init_database();
+var consecutiveFailures = 0;
+var circuitOpenedUntil = 0;
+var CIRCUIT_FAILURE_LIMIT = 3;
+var CIRCUIT_COOLDOWN_MS = 6e4;
+function getAiRuntimeStatus() {
+  const enabled = config.AI_ENABLED;
+  if (!enabled) return { state: "DISABLED", enabled, consecutiveFailures };
+  if (circuitOpenedUntil > Date.now()) {
+    return {
+      state: "DEGRADED",
+      enabled,
+      consecutiveFailures,
+      retryAt: new Date(circuitOpenedUntil).toISOString()
+    };
+  }
+  const configured = Boolean(config.GEMINI_API_KEY) || hasConfiguredDatabaseProvider();
+  return { state: configured ? "READY" : "NOT_CONFIGURED", enabled, consecutiveFailures };
+}
+function assertAiAvailable() {
+  const status = getAiRuntimeStatus();
+  if (status.state === "DISABLED") {
+    const error = new Error("AI runtime is disabled. Core Legal OS functions remain available.");
+    error.code = "AI_DISABLED";
+    throw error;
+  }
+  if (status.state === "DEGRADED") {
+    const error = new Error("AI runtime is temporarily unavailable. Core Legal OS functions remain available.");
+    error.code = "AI_DEGRADED";
+    throw error;
+  }
+}
+function recordAiSuccess() {
+  consecutiveFailures = 0;
+  circuitOpenedUntil = 0;
+}
+function recordAiFailure() {
+  consecutiveFailures += 1;
+  if (consecutiveFailures >= CIRCUIT_FAILURE_LIMIT) {
+    circuitOpenedUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
+  }
+}
+function hasConfiguredDatabaseProvider() {
+  try {
+    const row = database_default.prepare("SELECT 1 FROM ai_providers WHERE is_active = 1 AND api_key != '' LIMIT 1").get();
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
+// src/modules/ai/ai.routes.ts
 var router6 = (0, import_express6.Router)();
-router6.get("/memory", async (req, res) => {
+router6.get("/status", (_req, res) => {
+  res.json({ success: true, ...getAiRuntimeStatus() });
+});
+router6.get("/memory", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { query: query2, type, category, entity_id, status = "active", limit: limit2 = "50" } = req.query;
     let sql = `SELECT * FROM ai_agent_memories WHERE 1=1`;
@@ -11279,7 +12111,7 @@ router6.get("/memory", async (req, res) => {
     res.status(500).json({ success: false, error: err.message || "Failed to fetch memories." });
   }
 });
-router6.post("/memory", async (req, res) => {
+router6.post("/memory", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { title, content, memory_type, category, entity_type, entity_id, importance_score, tags, summary } = req.body;
     if (!title || !content) {
@@ -11303,7 +12135,7 @@ router6.post("/memory", async (req, res) => {
     res.status(500).json({ success: false, error: err.message || "Failed to add memory." });
   }
 });
-router6.put("/memory/:id", async (req, res) => {
+router6.put("/memory/:id", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { id } = req.params;
     const { title, content, summary, memory_type, category, importance_score, status, tags } = req.body;
@@ -11331,7 +12163,7 @@ router6.put("/memory/:id", async (req, res) => {
     res.status(500).json({ success: false, error: err.message || "Failed to update memory." });
   }
 });
-router6.delete("/memory/:id", async (req, res) => {
+router6.delete("/memory/:id", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { id } = req.params;
     const { permanent } = req.query;
@@ -11345,7 +12177,7 @@ router6.delete("/memory/:id", async (req, res) => {
     res.status(500).json({ success: false, error: err.message || "Failed to delete memory." });
   }
 });
-router6.post("/memory/consolidate", async (req, res) => {
+router6.post("/memory/consolidate", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const result = AgentMemoryService.consolidateMemories();
     res.json({ success: true, ...result });
@@ -11353,7 +12185,7 @@ router6.post("/memory/consolidate", async (req, res) => {
     res.status(500).json({ success: false, error: err.message || "Consolidation failed." });
   }
 });
-router6.get("/memory/stats", async (req, res) => {
+router6.get("/memory/stats", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const stats = AgentMemoryService.getStats();
     res.json({ success: true, stats });
@@ -11361,7 +12193,7 @@ router6.get("/memory/stats", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-router6.post("/memory/recall-test", async (req, res) => {
+router6.post("/memory/recall-test", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { query: query2, user_email, limit: limit2 = 5 } = req.body;
     if (!query2) return res.status(400).json({ error: "Query is required" });
@@ -11534,6 +12366,35 @@ function executeSearchTrainedKnowledge(query2) {
     return [];
   }
 }
+function executeSearchCallHistory(query2) {
+  const searchTerm = `%${query2.trim()}%`;
+  try {
+    return database_default.prepare(`
+      SELECT id, name, phone, type, direction, duration, status,
+             timestamp, staffName, branch, dossierId, dossierTitle,
+             category, call_result, consultationNote
+      FROM voip_calls
+      WHERE name LIKE ? OR phone LIKE ? OR staffName LIKE ? OR branch LIKE ?
+         OR dossierId LIKE ? OR dossierTitle LIKE ? OR category LIKE ?
+         OR call_result LIKE ? OR consultationNote LIKE ?
+      ORDER BY COALESCE(timestamp, created_at) DESC
+      LIMIT 20
+    `).all(
+      searchTerm,
+      searchTerm,
+      searchTerm,
+      searchTerm,
+      searchTerm,
+      searchTerm,
+      searchTerm,
+      searchTerm,
+      searchTerm
+    );
+  } catch (err) {
+    console.error("Error searching call history:", err);
+    return [];
+  }
+}
 function executeGetSystemStatistics() {
   try {
     const clients = database_default.prepare("SELECT COUNT(*) as count FROM clients").get();
@@ -11576,7 +12437,7 @@ function logAiCall(providerName, modelUsed, promptText, responseText, latencyMs,
     console.warn("Could not write to ai_logs:", e);
   }
 }
-router6.get("/training", async (req, res) => {
+router6.get("/training", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const items = database_default.prepare("SELECT * FROM ai_training_data ORDER BY id DESC").all();
     res.json(items);
@@ -11584,7 +12445,7 @@ router6.get("/training", async (req, res) => {
     res.status(500).json({ error: err.message || "Failed to fetch training data." });
   }
 });
-router6.post("/training", async (req, res) => {
+router6.post("/training", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { topic, pattern, response } = req.body;
     if (!topic || !pattern || !response) {
@@ -11597,7 +12458,7 @@ router6.post("/training", async (req, res) => {
     res.status(500).json({ error: err.message || "Failed to add training data." });
   }
 });
-router6.delete("/training/:id", async (req, res) => {
+router6.delete("/training/:id", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { id } = req.params;
     database_default.prepare("DELETE FROM ai_training_data WHERE id = ?").run(id);
@@ -11606,7 +12467,7 @@ router6.delete("/training/:id", async (req, res) => {
     res.status(500).json({ error: err.message || "Failed to delete training data." });
   }
 });
-router6.get("/providers", async (req, res) => {
+router6.get("/providers", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const providers = database_default.prepare("SELECT * FROM ai_providers ORDER BY id ASC").all();
     res.json(providers);
@@ -11614,7 +12475,7 @@ router6.get("/providers", async (req, res) => {
     res.status(500).json({ error: err.message || "Failed to fetch AI providers." });
   }
 });
-router6.post("/providers", async (req, res) => {
+router6.post("/providers", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { name, provider_type, api_key, api_url, default_model, task_assignment, temperature, max_tokens, is_active } = req.body;
     if (!name || !provider_type) {
@@ -11643,7 +12504,7 @@ router6.post("/providers", async (req, res) => {
     res.status(500).json({ error: err.message || "Failed to add AI provider." });
   }
 });
-router6.put("/providers/:id", async (req, res) => {
+router6.put("/providers/:id", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { id } = req.params;
     const { name, provider_type, api_key, api_url, default_model, task_assignment, temperature, max_tokens, is_active } = req.body;
@@ -11668,7 +12529,7 @@ router6.put("/providers/:id", async (req, res) => {
     res.status(500).json({ error: err.message || "Failed to update AI provider." });
   }
 });
-router6.delete("/providers/:id", async (req, res) => {
+router6.delete("/providers/:id", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { id } = req.params;
     database_default.prepare("DELETE FROM ai_providers WHERE id = ?").run(id);
@@ -11677,7 +12538,7 @@ router6.delete("/providers/:id", async (req, res) => {
     res.status(500).json({ error: err.message || "Failed to delete AI provider." });
   }
 });
-router6.get("/models", async (req, res) => {
+router6.get("/models", auth2, async (req, res) => {
   try {
     const models = database_default.prepare("SELECT * FROM ai_models ORDER BY provider ASC, name ASC").all();
     res.json(models);
@@ -11685,7 +12546,7 @@ router6.get("/models", async (req, res) => {
     res.status(500).json({ error: err.message || "Failed to fetch models catalog." });
   }
 });
-router6.post("/models/sync", async (req, res) => {
+router6.post("/models/sync", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { provider_type, api_key, api_url } = req.body;
     let fetchedModels = [];
@@ -11787,7 +12648,7 @@ router6.post("/models/sync", async (req, res) => {
     res.status(500).json({ error: e.message || "Failed to sync models." });
   }
 });
-router6.post("/providers/test", async (req, res) => {
+router6.post("/providers/test", requireRoles("admin", "director", "controller"), async (req, res) => {
   const startTime = Date.now();
   try {
     const { provider_type, api_key, api_url, default_model } = req.body;
@@ -12002,6 +12863,7 @@ router6.post("/ask", async (req, res) => {
   const startTime = Date.now();
   try {
     const { prompt, files, enableSearchGrounding, customApiKey, customProviderType } = req.body;
+    assertAiAvailable();
     const candidates = getAllCandidateAiProviders("all", customApiKey, customProviderType);
     if (candidates.length === 0) {
       return res.status(400).json({
@@ -12043,6 +12905,7 @@ router6.post("/ask", async (req, res) => {
           const responseText = data.choices?.[0]?.message?.content || "Kh\u1EDFi t\u1EA1o ph\u1EA3n h\u1ED3i t\u1EEB AI kh\xF4ng th\xE0nh c\xF4ng.";
           const latency2 = Date.now() - pStart;
           logAiCall(provider.name, provider.default_model, prompt, responseText, latency2, "success");
+          recordAiSuccess();
           return res.json({ text: responseText, providerUsed: provider.name });
         }
         if (provider.provider_type === "claude") {
@@ -12071,6 +12934,7 @@ router6.post("/ask", async (req, res) => {
           const responseText = data.content?.[0]?.text || "Kh\u1EDFi t\u1EA1o ph\u1EA3n h\u1ED3i t\u1EEB Claude kh\xF4ng th\xE0nh c\xF4ng.";
           const latency2 = Date.now() - pStart;
           logAiCall(provider.name, provider.default_model, prompt, responseText, latency2, "success");
+          recordAiSuccess();
           return res.json({ text: responseText, providerUsed: provider.name });
         }
         let apiKeyToUse = provider.api_key || process.env.GEMINI_API_KEY;
@@ -12107,6 +12971,17 @@ router6.post("/ask", async (req, res) => {
             type: import_genai2.Type.OBJECT,
             properties: {
               query: { type: import_genai2.Type.STRING, description: "Ch\u1EE7 \u0111\u1EC1 c\u1EA7n tra c\u1EE9u ki\u1EBFn th\u1EE9c \u0111\xE3 hu\u1EA5n luy\u1EC7n." }
+            },
+            required: ["query"]
+          }
+        };
+        const searchCallHistoryTool = {
+          name: "search_call_history",
+          description: "Tra c\u1EE9u l\u1ECBch s\u1EED cu\u1ED9c g\u1ECDi t\u1EEB Call Center \u0111\u1EC3 ph\xE2n t\xEDch kh\xE1ch h\xE0ng, h\u1ED3 s\u01A1, nh\xE2n s\u1EF1, chi nh\xE1nh, k\u1EBFt qu\u1EA3 t\u01B0 v\u1EA5n v\xE0 hi\u1EC7u su\u1EA5t li\xEAn h\u1EC7.",
+          parameters: {
+            type: import_genai2.Type.OBJECT,
+            properties: {
+              query: { type: import_genai2.Type.STRING, description: "T\xEAn kh\xE1ch h\xE0ng, s\u1ED1 \u0111i\u1EC7n tho\u1EA1i, m\xE3 h\u1ED3 s\u01A1, nh\xE2n s\u1EF1, chi nh\xE1nh ho\u1EB7c n\u1ED9i dung cu\u1ED9c g\u1ECDi c\u1EA7n tra c\u1EE9u." }
             },
             required: ["query"]
           }
@@ -12215,6 +13090,7 @@ router6.post("/ask", async (req, res) => {
             functionDeclarations: [
               searchSystemDataTool,
               searchTrainedKnowledgeTool,
+              searchCallHistoryTool,
               searchAgentMemoryTool,
               storeAgentMemoryTool,
               executeUnifiedMcpToolDecl,
@@ -12225,8 +13101,10 @@ router6.post("/ask", async (req, res) => {
             ]
           }
         ];
-        const sessionUserEmail = req.session?.user?.email || "system";
-        const memoryContext = AgentMemoryService.buildMemoryContext(prompt || "", sessionUserEmail);
+        const authenticatedUser = req.user || req.session?.user || null;
+        const isInternalAiUser = authenticatedUser && String(authenticatedUser.role || "").toLowerCase() !== "client";
+        const sessionUserEmail = authenticatedUser?.email || "system";
+        const memoryContext = isInternalAiUser ? AgentMemoryService.buildMemoryContext(prompt || "", sessionUserEmail) : "";
         const parts = [];
         if (memoryContext) {
           parts.push({ text: memoryContext });
@@ -12260,10 +13138,34 @@ router6.post("/ask", async (req, res) => {
           for (const call of functionCalls) {
             let results = null;
             const callArgs = call.args;
+            const publicBlockedTools = /* @__PURE__ */ new Set([
+              "search_system_data",
+              "search_trained_knowledge",
+              "search_call_history",
+              "get_system_statistics",
+              "search_agent_memory",
+              "store_agent_memory",
+              "execute_unified_mcp_tool",
+              "execute_mcp_iot_tool",
+              "generate_legal_document",
+              "update_record_status"
+            ]);
+            if (!isInternalAiUser && publicBlockedTools.has(call.name || "")) {
+              results = {
+                success: false,
+                error: "B\u1EA1n c\u1EA7n \u0111\u0103ng nh\u1EADp \u0111\u1EC3 s\u1EED d\u1EE5ng d\u1EEF li\u1EC7u v\xE0 thao t\xE1c n\u1ED9i b\u1ED9 c\u1EE7a h\u1EC7 th\u1ED1ng."
+              };
+              toolParts.push({
+                functionResponse: { name: call.name, response: results }
+              });
+              continue;
+            }
             if (call.name === "search_system_data") {
               results = executeSearchSystemData(callArgs.query || "", callArgs.targetTable || "");
             } else if (call.name === "search_trained_knowledge") {
               results = executeSearchTrainedKnowledge(callArgs.query || "");
+            } else if (call.name === "search_call_history") {
+              results = executeSearchCallHistory(callArgs.query || "");
             } else if (call.name === "get_system_statistics") {
               results = executeGetSystemStatistics();
             } else if (call.name === "generate_legal_document") {
@@ -12305,12 +13207,11 @@ router6.post("/ask", async (req, res) => {
                   const resTasks = database_default.prepare("UPDATE tasks SET status = ? WHERE id = ?").run(callArgs.status, callArgs.targetId);
                   rowsAffected = resTasks.changes;
                 } else if (table === "erp_records") {
-                  const record = database_default.prepare("SELECT data FROM erp_records WHERE id = ?").get(callArgs.targetId);
-                  if (record) {
-                    const dataObj = JSON.parse(record.data);
+                  const dataObj = SystemDataAccess.getRecordById(String(callArgs.targetId));
+                  if (dataObj) {
                     dataObj.status = callArgs.status;
-                    const resRec = database_default.prepare("UPDATE erp_records SET data = ? WHERE id = ?").run(JSON.stringify(dataObj), callArgs.targetId);
-                    rowsAffected = resRec.changes;
+                    SystemDataAccess.saveRecord(dataObj);
+                    rowsAffected = 1;
                   }
                 }
                 results = {
@@ -12416,6 +13317,7 @@ router6.post("/ask", async (req, res) => {
       }
     }
     console.error("All AI candidates failed. Last error:", lastError);
+    recordAiFailure();
     const errString = lastError ? lastError.message || String(lastError) : "";
     const isQuota = errString.includes("429") || errString.includes("RESOURCE_EXHAUSTED") || errString.includes("Quota exceeded");
     return res.status(429).json({
@@ -12425,13 +13327,15 @@ router6.post("/ask", async (req, res) => {
     });
   } catch (error) {
     console.error("AI Route Global Error:", error);
-    res.status(500).json({
+    const unavailable = error.code === "AI_DISABLED" || error.code === "AI_DEGRADED";
+    res.status(unavailable ? 503 : 500).json({
       error: error.message || "L\u1ED7i khi x\u1EED l\xFD v\u1EDBi AI.",
-      needApiKeyPrompt: true
+      aiUnavailable: unavailable,
+      needApiKeyPrompt: !unavailable
     });
   }
 });
-router6.post("/data-formulator/formulate", async (req, res) => {
+router6.post("/data-formulator/formulate", auth2, async (req, res) => {
   try {
     const { dataset, instruction, custom_api_key } = req.body;
     if (!dataset || !Array.isArray(dataset)) {
@@ -13019,10 +13923,10 @@ router7.post("/offices", canEditWeb, async (req, res) => {
   const { name, short_name, region, address, phone, email, map_url, is_headquarters, latitude, longitude } = req.body;
   try {
     if (is_headquarters) {
-      database_default.prepare(`UPDATE offices SET is_headquarters = 0`).run();
+      SharedDirectoryService.clearHeadquarters();
     }
-    const result = database_default.prepare(`INSERT INTO offices (name, short_name, region, address, phone, email, map_url, is_headquarters, latitude, longitude) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(val(name), val(short_name), val(region), val(address), val(phone), val(email), val(map_url), is_headquarters ? 1 : 0, val(latitude), val(longitude));
-    await syncRowToFirestore("offices", Number(result.lastInsertRowid));
+    const officeId = SharedDirectoryService.createOffice({ name: val(name), short_name: val(short_name), region: val(region), address: val(address), phone: val(phone), email: val(email), map_url: val(map_url), is_headquarters, latitude: val(latitude), longitude: val(longitude) });
+    await syncRowToFirestore("offices", officeId);
     try {
       const io2 = req.app.get("io");
       if (io2) {
@@ -13040,9 +13944,9 @@ router7.put("/offices/:id", canEditWeb, async (req, res) => {
   const { name, short_name, region, address, phone, email, map_url, is_headquarters, latitude, longitude } = req.body;
   try {
     if (is_headquarters) {
-      database_default.prepare(`UPDATE offices SET is_headquarters = 0 WHERE id != ?`).run(req.params.id);
+      SharedDirectoryService.clearHeadquarters(req.params.id);
     }
-    database_default.prepare(`UPDATE offices SET name=?, short_name=?, region=?, address=?, phone=?, email=?, map_url=?, is_headquarters=?, latitude=?, longitude=? WHERE id=?`).run(val(name), val(short_name), val(region), val(address), val(phone), val(email), val(map_url), is_headquarters ? 1 : 0, val(latitude), val(longitude), req.params.id);
+    SharedDirectoryService.updateOffice(req.params.id, { name: val(name), short_name: val(short_name), region: val(region), address: val(address), phone: val(phone), email: val(email), map_url: val(map_url), is_headquarters, latitude: val(latitude), longitude: val(longitude) });
     await syncRowToFirestore("offices", req.params.id);
     try {
       const io2 = req.app.get("io");
@@ -13059,7 +13963,7 @@ router7.put("/offices/:id", canEditWeb, async (req, res) => {
 });
 router7.delete("/offices/:id", canEditWeb, async (req, res) => {
   try {
-    database_default.prepare(`DELETE FROM offices WHERE id=?`).run(req.params.id);
+    SharedDirectoryService.deleteOffice(req.params.id);
     await deleteFromFirestore("offices", req.params.id);
     try {
       const io2 = req.app.get("io");
@@ -13937,9 +14841,9 @@ router7.post("/query-land-document", async (req, res) => {
       return res.json({ success: true, answer: `Hi\u1EC7n t\u1EA1i ch\u01B0a c\xF3 t\xE0i li\u1EC7u c\u01A1 s\u1EDF d\u1EEF li\u1EC7u \u0111\u1EA5t \u0111ai n\xE0o \u0111\u01B0\u1EE3c t\u1EA3i l\xEAn cho **${province_name}**. B\u1EA1n vui l\xF2ng t\u1EA3i l\xEAn t\xE0i li\u1EC7u v\u0103n b\u1EA3n \u0111\u1EC3 AI c\xF3 th\u1EC3 ph\xE2n t\xEDch v\xE0 tr\u1EA3 l\u1EDDi.` });
     }
     let combinedContent = "";
-    docs.forEach((doc4, idx) => {
-      combinedContent += `--- T\xC0I LI\u1EC6U ${idx + 1}: ${doc4.file_name} ---
-${doc4.content}
+    docs.forEach((doc3, idx) => {
+      combinedContent += `--- T\xC0I LI\u1EC6U ${idx + 1}: ${doc3.file_name} ---
+${doc3.content}
 
 `;
     });
@@ -14076,13 +14980,7 @@ router7.post("/attendance/check-in", (req, res) => {
 router7.post("/attendance/bulk", (req, res) => {
   const { date, role, status, checkInTime } = req.body;
   try {
-    let usersQuery = "SELECT id, username, name, role, staff_code FROM users";
-    const params = [];
-    if (role && role !== "All") {
-      usersQuery += " WHERE role = ?";
-      params.push(role);
-    }
-    const targetUsers = database_default.prepare(usersQuery).all(params);
+    const targetUsers = SharedDirectoryService.listAttendanceTargets(role);
     for (const u of targetUsers) {
       const existing = database_default.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ?").get(u.id, date);
       if (existing) {
@@ -14107,15 +15005,22 @@ router7.post("/attendance/approve-late", (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-router7.get("/unlock-requests", (req, res) => {
+router7.get("/unlock-requests", auth2, (req, res) => {
   try {
+    const user = req.user || req.session?.user;
+    const role = String(user?.role || "").toLowerCase();
+    const adminLike = ["admin", "director", "deputy_director", "deputydirector", "controller", "ki\u1EC3m so\xE1t vi\xEAn", "ki\u1EC3m so\xE1t ch\u1EA5t l\u01B0\u1EE3ng"].includes(role);
+    const canViewReports = !!(user && (adminLike || role === "manager" || role === "head_of_department" || role === "prosecutor" || role === "lawyer" || role === "legal_associate"));
+    if (!canViewReports && !adminLike) {
+      return res.status(403).json({ success: false, error: "B\u1EA1n kh\xF4ng c\xF3 quy\u1EC1n xem y\xEAu c\u1EA7u m\u1EDF b\xE1o c\xE1o." });
+    }
     const rows = database_default.prepare("SELECT * FROM report_unlock_requests ORDER BY id DESC").all();
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-router7.post("/unlock-requests/create", (req, res) => {
+router7.post("/unlock-requests/create", auth2, (req, res) => {
   const { dossierId, clientName, staffName, eventTitle, eventDate, reason } = req.body;
   const createdAt = (/* @__PURE__ */ new Date()).toISOString();
   try {
@@ -14130,9 +15035,15 @@ router7.post("/unlock-requests/create", (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-router7.post("/unlock-requests/approve", (req, res) => {
+router7.post("/unlock-requests/approve", auth2, (req, res) => {
   const { id, approve } = req.body;
   try {
+    const user = req.user || req.session?.user;
+    const role = String(user?.role || "").toLowerCase();
+    const adminLike = ["admin", "director", "deputy_director", "deputydirector", "controller", "ki\u1EC3m so\xE1t vi\xEAn", "ki\u1EC3m so\xE1t ch\u1EA5t l\u01B0\u1EE3ng"].includes(role);
+    if (!adminLike && role !== "manager" && role !== "head_of_department") {
+      return res.status(403).json({ success: false, error: "B\u1EA1n kh\xF4ng c\xF3 quy\u1EC1n ph\xEA duy\u1EC7t y\xEAu c\u1EA7u m\u1EDF b\xE1o c\xE1o." });
+    }
     const status = approve ? "approved" : "rejected";
     database_default.prepare("UPDATE report_unlock_requests SET status = ? WHERE id = ?").run(status, id);
     try {
@@ -14731,7 +15642,131 @@ init_trash_service();
 var import_fs8 = __toESM(require("fs"), 1);
 var import_path8 = __toESM(require("path"), 1);
 var import_multer2 = __toESM(require("multer"), 1);
+init_SystemDataAccess();
 var router9 = import_express9.default.Router();
+router9.get("/appointments", auth2, (req, res) => {
+  try {
+    const user = req.user || req.session?.user;
+    const accountType = String(user?.account_type || user?.accountType || "").toUpperCase();
+    const isClient = accountType === "CUSTOMER" || ["client", "customer"].includes(String(user?.role || "").toLowerCase());
+    let query2 = `
+      SELECT id, client_name as clientName, phone, category,
+             date_time as dateTime, assigned_staff as assignedStaff,
+             type, notes, status, created_at as createdAt
+      FROM appointments`;
+    const params = [];
+    if (isClient) {
+      query2 += " WHERE client_name = ? OR phone = ?";
+      params.push(user?.name || "", user?.phone || "");
+    }
+    query2 += " ORDER BY id DESC";
+    const rows = database_default.prepare(query2).all(...params);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to load appointments" });
+  }
+});
+router9.post("/appointments", auth2, (req, res) => {
+  try {
+    const user = req.user || req.session?.user;
+    const payload = req.body || {};
+    const accountType = String(user?.account_type || user?.accountType || "").toUpperCase();
+    const isClient = accountType === "CUSTOMER" || ["client", "customer"].includes(String(user?.role || "").toLowerCase());
+    if (!payload.dateTime || !payload.category || !payload.type || isClient && !user?.name) {
+      return res.status(400).json({ error: "Thi\u1EBFu th\xF4ng tin l\u1ECBch h\u1EB9n." });
+    }
+    const id = String(payload.id || `appt-client-${Date.now()}`);
+    const clientName = isClient ? user.name : String(payload.clientName || "");
+    const phone = isClient ? user.phone || "" : String(payload.phone || "");
+    if (!clientName || !phone) return res.status(400).json({ error: "Thi\u1EBFu th\xF4ng tin kh\xE1ch h\xE0ng." });
+    database_default.prepare(`
+      INSERT INTO appointments (
+        id, client_name, phone, category, date_time, assigned_staff,
+        type, notes, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    `).run(id, clientName, phone, payload.category, payload.dateTime, payload.assignedStaff || "\u0110ang ph\xE2n c\xF4ng", payload.type, payload.notes || "", (/* @__PURE__ */ new Date()).toISOString());
+    res.json({ success: true, id });
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to create appointment" });
+  }
+});
+router9.put("/appointments/:id", requireRoles("admin", "director", "manager", "controller"), (req, res) => {
+  try {
+    const payload = req.body || {};
+    const allowedFields = ["clientName", "phone", "category", "dateTime", "assignedStaff", "type", "notes", "status"];
+    const updates = [];
+    const values = [];
+    const columnMap = {
+      clientName: "client_name",
+      dateTime: "date_time",
+      assignedStaff: "assigned_staff",
+      phone: "phone",
+      category: "category",
+      type: "type",
+      notes: "notes",
+      status: "status"
+    };
+    for (const field of allowedFields) {
+      if (payload[field] !== void 0) {
+        updates.push(`${columnMap[field]} = ?`);
+        values.push(payload[field]);
+      }
+    }
+    if (updates.length === 0) return res.status(400).json({ error: "Kh\xF4ng c\xF3 d\u1EEF li\u1EC7u c\u1EADp nh\u1EADt." });
+    values.push(req.params.id);
+    database_default.prepare(`UPDATE appointments SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to update appointment" });
+  }
+});
+router9.delete("/appointments/:id", requireRoles("admin", "director", "manager", "controller"), (req, res) => {
+  try {
+    database_default.prepare("DELETE FROM appointments WHERE id = ?").run(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to delete appointment" });
+  }
+});
+router9.get("/portal-activities", requireRoles("admin", "director", "manager", "controller"), (req, res) => {
+  try {
+    const rows = database_default.prepare(`
+      SELECT id, type, client_id as clientId, client_name as clientName,
+             document_title as documentTitle, response_time_minutes as responseTimeMinutes,
+             timestamp
+      FROM portal_activities
+      ORDER BY timestamp DESC
+      LIMIT 100
+    `).all();
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to load portal activities" });
+  }
+});
+router9.post("/portal-activities", requireRoles("admin", "director", "manager", "controller"), (req, res) => {
+  try {
+    const payload = req.body || {};
+    if (!payload.type || !payload.clientName) {
+      return res.status(400).json({ error: "Thi\u1EBFu th\xF4ng tin ho\u1EA1t \u0111\u1ED9ng c\u1ED5ng kh\xE1ch h\xE0ng." });
+    }
+    const id = String(payload.id || `portal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    database_default.prepare(`
+      INSERT INTO portal_activities (id, type, client_id, client_name, document_title, response_time_minutes, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      payload.type,
+      payload.clientId || null,
+      payload.clientName,
+      payload.documentTitle || null,
+      payload.responseTimeMinutes === void 0 ? null : Number(payload.responseTimeMinutes),
+      payload.timestamp || (/* @__PURE__ */ new Date()).toISOString()
+    );
+    res.json({ success: true, id });
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to create portal activity" });
+  }
+});
 var storage = import_multer2.default.diskStorage({
   destination: function(req, file, cb) {
     const dir = process.env.NODE_ENV === "production" ? import_path8.default.join("/tmp", "uploads") : import_path8.default.join(process.cwd(), "uploads");
@@ -14759,7 +15794,7 @@ var upload2 = (0, import_multer2.default)({
     }
   }
 });
-router9.get("/live-threads", auth2, (req, res) => {
+router9.get("/live-threads", requireRoles("admin", "director", "manager", "controller"), (req, res) => {
   try {
     const threads = database_default.prepare(`
       SELECT visitor_id, MAX(created_at) as last_message_time, SUM(CASE WHEN is_read=0 AND sender_type='visitor' THEN 1 ELSE 0 END) as unread_count 
@@ -14777,15 +15812,34 @@ router9.get("/live-threads", auth2, (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-router9.get("/live-messages/:visitorId", (req, res) => {
+router9.get("/live-messages/:visitorId", auth2, (req, res) => {
   try {
+    const user = req.user || req.session?.user;
+    const visitorId = String(req.params.visitorId || "");
+    const isClient = String(user?.role || "").toLowerCase() === "client";
+    const allowedVisitorIds = [String(user?.username || ""), `client_${user?.id}`];
+    if (isClient && !allowedVisitorIds.includes(visitorId)) {
+      return res.status(403).json({ error: "B\u1EA1n kh\xF4ng c\xF3 quy\u1EC1n xem cu\u1ED9c tr\xF2 chuy\u1EC7n n\xE0y." });
+    }
     const msgs = database_default.prepare("SELECT * FROM live_messages WHERE visitor_id = ? ORDER BY created_at ASC").all(req.params.visitorId);
     res.json(msgs);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
-router9.post("/live-upload", upload2.single("file"), (req, res) => {
+router9.post("/live-upload", auth2, upload2.single("file"), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded" });
+  }
+  const fileUrl = `/uploads/${req.file.filename}`;
+  res.json({
+    url: fileUrl,
+    fileUrl,
+    name: req.file.originalname,
+    fileName: req.file.originalname
+  });
+});
+router9.post("/secure-upload", auth2, upload2.single("file"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "No file uploaded" });
   }
@@ -14830,7 +15884,7 @@ router9.post("/messages", (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-router9.get("/messages", auth2, (req, res) => {
+router9.get("/messages", requireRoles("admin", "director", "manager", "controller"), (req, res) => {
   try {
     const messages = database_default.prepare("SELECT * FROM messages ORDER BY created_at DESC").all();
     res.json(messages);
@@ -14838,7 +15892,7 @@ router9.get("/messages", auth2, (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-router9.put("/messages/:id", auth2, (req, res) => {
+router9.put("/messages/:id", requireRoles("admin", "director", "manager", "controller"), (req, res) => {
   const { is_read, reply_notes } = req.body;
   try {
     if (reply_notes !== void 0) {
@@ -14854,35 +15908,11 @@ router9.put("/messages/:id", auth2, (req, res) => {
 router9.get("/stats", auth2, (req, res) => {
   try {
     let stats = database_default.prepare("SELECT * FROM visitor_stats ORDER BY date ASC").all();
-    if (!stats || stats.length < 10) {
-      for (let i = 29; i >= 0; i--) {
-        const d = /* @__PURE__ */ new Date();
-        d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split("T")[0];
-        try {
-          database_default.prepare("INSERT OR IGNORE INTO visitor_stats (date, visitors, page_views, chats) VALUES (?, ?, ?, ?)").run(
-            dateStr,
-            Math.floor(Math.random() * 45) + 20,
-            Math.floor(Math.random() * 150) + 60,
-            Math.floor(Math.random() * 12) + 2
-          );
-        } catch (e) {
-        }
-      }
-      stats = database_default.prepare("SELECT * FROM visitor_stats ORDER BY date ASC").all();
-    }
     const totalMessages = database_default.prepare("SELECT COUNT(*) as count FROM messages").get();
     const unreadMessages = database_default.prepare("SELECT COUNT(*) as count FROM messages WHERE is_read = 0").get();
     let records = [];
     try {
-      const rows = database_default.prepare("SELECT data FROM erp_records").all();
-      records = rows.map((r) => {
-        try {
-          return JSON.parse(r.data);
-        } catch (e) {
-          return null;
-        }
-      }).filter(Boolean);
+      records = SystemDataAccess.getAllRecords();
     } catch (e) {
     }
     const getRecordArea = (r) => {
@@ -14900,71 +15930,98 @@ router9.get("/stats", auth2, (req, res) => {
       if (cat.includes("ngo\u1EA1i t\u1ED1 t\u1EE5ng") || cat.includes("\u0111\u1EA1i di\u1EC7n")) return "dai_dien_ngoai_to_tung";
       if (cat.includes("n\u1ED9i b\u1ED9") || cat.includes("ph\xE1p ch\u1EBF")) return "noi_bo";
       if (cat.includes("tr\u1ECDng t\xE0i") || cat.includes("h\xF2a gi\u1EA3i") || cat.includes("arbitration")) return "trong_tai_hoa_giai";
-      return "tranh_tung";
+      return "unclassified";
     };
     const countTranhTung = records.filter((r) => getRecordArea(r) === "tranh_tung").length;
     const countTuVan = records.filter((r) => getRecordArea(r) === "tu_van").length;
     const countDaiDien = records.filter((r) => getRecordArea(r) === "dai_dien_ngoai_to_tung").length;
     const countNoiBo = records.filter((r) => getRecordArea(r) === "noi_bo").length;
     const countTrongTai = records.filter((r) => getRecordArea(r) === "trong_tai_hoa_giai").length;
+    const countUnclassified = records.filter((r) => getRecordArea(r) === "unclassified").length;
     const sumRevenue = (area) => {
-      return records.filter((r) => getRecordArea(r) === area).reduce((sum, r) => sum + (typeof r.feeAmount === "number" ? r.feeAmount : parseInt(r.fee) || 12e7), 0);
+      return records.filter((r) => getRecordArea(r) === area).reduce((sum, r) => {
+        const rawValue = r.feeAmount ?? r.fee ?? 0;
+        const value = typeof rawValue === "number" ? rawValue : Number(String(rawValue).replace(/[^0-9.-]/g, ""));
+        return sum + (Number.isFinite(value) ? value : 0);
+      }, 0);
     };
-    let legalServicesPerformance = [
+    const legalServicesPerformance = [
       {
         name: "Tranh t\u1EE5ng & D\xE2n s\u1EF1",
-        casesCount: countTranhTung || 35,
-        revenue: sumRevenue("tranh_tung") || 12e8,
-        conversionRate: 85,
-        satisfaction: 98,
-        activeConsultations: Math.max(2, Math.floor((countTranhTung || 35) * 0.4)),
+        casesCount: countTranhTung,
+        revenue: sumRevenue("tranh_tung"),
+        conversionRate: 0,
+        satisfaction: 0,
+        activeConsultations: records.filter((r) => getRecordArea(r) === "tranh_tung" && !["ho\xE0n th\xE0nh", "completed", "\u0111\xF3ng h\u1ED3 s\u01A1"].includes(String(r.status || "").toLowerCase())).length,
         color: "#a855f7"
       },
       {
         name: "T\u01B0 v\u1EA5n Ph\xE1p lu\u1EADt",
-        casesCount: countTuVan || 42,
-        revenue: sumRevenue("tu_van") || 85e7,
-        conversionRate: 90,
-        satisfaction: 97,
-        activeConsultations: Math.max(3, Math.floor((countTuVan || 42) * 0.35)),
+        casesCount: countTuVan,
+        revenue: sumRevenue("tu_van"),
+        conversionRate: 0,
+        satisfaction: 0,
+        activeConsultations: records.filter((r) => getRecordArea(r) === "tu_van" && !["ho\xE0n th\xE0nh", "completed", "\u0111\xF3ng h\u1ED3 s\u01A1"].includes(String(r.status || "").toLowerCase())).length,
         color: "#3b82f6"
       },
       {
         name: "\u0110\u1EA1i di\u1EC7n Ngo\xE0i t\u1ED1 t\u1EE5ng",
-        casesCount: countDaiDien || 28,
-        revenue: sumRevenue("dai_dien_ngoai_to_tung") || 62e7,
-        conversionRate: 88,
-        satisfaction: 95,
-        activeConsultations: Math.max(2, Math.floor((countDaiDien || 28) * 0.3)),
+        casesCount: countDaiDien,
+        revenue: sumRevenue("dai_dien_ngoai_to_tung"),
+        conversionRate: 0,
+        satisfaction: 0,
+        activeConsultations: records.filter((r) => getRecordArea(r) === "dai_dien_ngoai_to_tung" && !["ho\xE0n th\xE0nh", "completed", "\u0111\xF3ng h\u1ED3 s\u01A1"].includes(String(r.status || "").toLowerCase())).length,
         color: "#06b6d4"
       },
       {
         name: "Ph\xE1p ch\u1EBF & N\u1ED9i b\u1ED9",
-        casesCount: countNoiBo || 54,
-        revenue: sumRevenue("noi_bo") || 49e7,
-        conversionRate: 94,
-        satisfaction: 99,
-        activeConsultations: Math.max(4, Math.floor((countNoiBo || 54) * 0.3)),
+        casesCount: countNoiBo,
+        revenue: sumRevenue("noi_bo"),
+        conversionRate: 0,
+        satisfaction: 0,
+        activeConsultations: records.filter((r) => getRecordArea(r) === "noi_bo" && !["ho\xE0n th\xE0nh", "completed", "\u0111\xF3ng h\u1ED3 s\u01A1"].includes(String(r.status || "").toLowerCase())).length,
         color: "#10b981"
       },
       {
         name: "Tr\u1ECDng t\xE0i & H\xF2a gi\u1EA3i",
-        casesCount: countTrongTai || 22,
-        revenue: sumRevenue("trong_tai_hoa_giai") || 38e7,
-        conversionRate: 86,
-        satisfaction: 96,
-        activeConsultations: Math.max(2, Math.floor((countTrongTai || 22) * 0.3)),
+        casesCount: countTrongTai,
+        revenue: sumRevenue("trong_tai_hoa_giai"),
+        conversionRate: 0,
+        satisfaction: 0,
+        activeConsultations: records.filter((r) => getRecordArea(r) === "trong_tai_hoa_giai" && !["ho\xE0n th\xE0nh", "completed", "\u0111\xF3ng h\u1ED3 s\u01A1"].includes(String(r.status || "").toLowerCase())).length,
         color: "#f59e0b"
+      },
+      {
+        name: "Ch\u01B0a ph\xE2n lo\u1EA1i",
+        casesCount: countUnclassified,
+        revenue: sumRevenue("unclassified"),
+        conversionRate: 0,
+        satisfaction: 0,
+        activeConsultations: records.filter((r) => getRecordArea(r) === "unclassified" && !["ho\xE0n th\xE0nh", "completed", "\u0111\xF3ng h\u1ED3 s\u01A1"].includes(String(r.status || "").toLowerCase())).length,
+        color: "#94a3b8"
       }
     ];
-    const monthlyServicesTrend = [
-      { month: "Th\xE1ng 1", "Tranh t\u1EE5ng & D\xE2n s\u1EF1": Math.max(4, Math.floor((countTranhTung || 35) * 0.15)), "T\u01B0 v\u1EA5n Ph\xE1p lu\u1EADt": Math.max(5, Math.floor((countTuVan || 42) * 0.15)), "\u0110\u1EA1i di\u1EC7n Ngo\xE0i t\u1ED1 t\u1EE5ng": 4, "Ph\xE1p ch\u1EBF & N\u1ED9i b\u1ED9": 8, "Tr\u1ECDng t\xE0i & H\xF2a gi\u1EA3i": 3 },
-      { month: "Th\xE1ng 2", "Tranh t\u1EE5ng & D\xE2n s\u1EF1": Math.max(6, Math.floor((countTranhTung || 35) * 0.18)), "T\u01B0 v\u1EA5n Ph\xE1p lu\u1EADt": Math.max(7, Math.floor((countTuVan || 42) * 0.18)), "\u0110\u1EA1i di\u1EC7n Ngo\xE0i t\u1ED1 t\u1EE5ng": 5, "Ph\xE1p ch\u1EBF & N\u1ED9i b\u1ED9": 10, "Tr\u1ECDng t\xE0i & H\xF2a gi\u1EA3i": 4 },
-      { month: "Th\xE1ng 3", "Tranh t\u1EE5ng & D\xE2n s\u1EF1": Math.max(8, Math.floor((countTranhTung || 35) * 0.22)), "T\u01B0 v\u1EA5n Ph\xE1p lu\u1EADt": Math.max(9, Math.floor((countTuVan || 42) * 0.22)), "\u0110\u1EA1i di\u1EC7n Ngo\xE0i t\u1ED1 t\u1EE5ng": 7, "Ph\xE1p ch\u1EBF & N\u1ED9i b\u1ED9": 12, "Tr\u1ECDng t\xE0i & H\xF2a gi\u1EA3i": 5 },
-      { month: "Th\xE1ng 4", "Tranh t\u1EE5ng & D\xE2n s\u1EF1": Math.max(10, Math.floor((countTranhTung || 35) * 0.25)), "T\u01B0 v\u1EA5n Ph\xE1p lu\u1EADt": Math.max(12, Math.floor((countTuVan || 42) * 0.25)), "\u0110\u1EA1i di\u1EC7n Ngo\xE0i t\u1ED1 t\u1EE5ng": 8, "Ph\xE1p ch\u1EBF & N\u1ED9i b\u1ED9": 15, "Tr\u1ECDng t\xE0i & H\xF2a gi\u1EA3i": 6 },
-      { month: "Th\xE1ng 5", "Tranh t\u1EE5ng & D\xE2n s\u1EF1": Math.max(12, Math.floor((countTranhTung || 35) * 0.28)), "T\u01B0 v\u1EA5n Ph\xE1p lu\u1EADt": Math.max(15, Math.floor((countTuVan || 42) * 0.28)), "\u0110\u1EA1i di\u1EC7n Ngo\xE0i t\u1ED1 t\u1EE5ng": 10, "Ph\xE1p ch\u1EBF & N\u1ED9i b\u1ED9": 18, "Tr\u1ECDng t\xE0i & H\xF2a gi\u1EA3i": 8 },
-      { month: "Th\xE1ng 6", "Tranh t\u1EE5ng & D\xE2n s\u1EF1": countTranhTung || 35, "T\u01B0 v\u1EA5n Ph\xE1p lu\u1EADt": countTuVan || 42, "\u0110\u1EA1i di\u1EC7n Ngo\xE0i t\u1ED1 t\u1EE5ng": countDaiDien || 28, "Ph\xE1p ch\u1EBF & N\u1ED9i b\u1ED9": countNoiBo || 54, "Tr\u1ECDng t\xE0i & H\xF2a gi\u1EA3i": countTrongTai || 22 }
-    ];
+    const areaLabels = {
+      tranh_tung: "Tranh t\u1EE5ng & D\xE2n s\u1EF1",
+      tu_van: "T\u01B0 v\u1EA5n Ph\xE1p lu\u1EADt",
+      dai_dien_ngoai_to_tung: "\u0110\u1EA1i di\u1EC7n Ngo\xE0i t\u1ED1 t\u1EE5ng",
+      noi_bo: "Ph\xE1p ch\u1EBF & N\u1ED9i b\u1ED9",
+      trong_tai_hoa_giai: "Tr\u1ECDng t\xE0i & H\xF2a gi\u1EA3i",
+      unclassified: "Ch\u01B0a ph\xE2n lo\u1EA1i"
+    };
+    const now = /* @__PURE__ */ new Date();
+    const monthlyServicesTrend = Array.from({ length: 6 }, (_, index) => {
+      const monthDate = new Date(now.getFullYear(), now.getMonth() - (5 - index), 1);
+      const monthKey = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, "0")}`;
+      const row = { month: `Th\xE1ng ${monthDate.getMonth() + 1}/${monthDate.getFullYear()}` };
+      for (const area of Object.keys(areaLabels)) {
+        row[areaLabels[area]] = records.filter((record) => {
+          const date = String(record.created_at || record.date || record.receiveDate || "").slice(0, 7);
+          return date === monthKey && getRecordArea(record) === area;
+        }).length;
+      }
+      return row;
+    });
     res.json({
       chartData: stats,
       legalServicesPerformance,
@@ -14981,22 +16038,8 @@ router9.get("/stats", auth2, (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-router9.post("/stats/seed", auth2, (req, res) => {
-  for (let i = 20; i >= 0; i--) {
-    const d = /* @__PURE__ */ new Date();
-    d.setDate(d.getDate() - i);
-    const dateStr = d.toISOString().split("T")[0];
-    try {
-      database_default.prepare("INSERT OR IGNORE INTO visitor_stats (date, visitors, page_views, chats) VALUES (?, ?, ?, ?)").run(
-        dateStr,
-        Math.floor(Math.random() * 20),
-        Math.floor(Math.random() * 50) + 10,
-        Math.floor(Math.random() * 5)
-      );
-    } catch (e) {
-    }
-  }
-  res.json({ success: true });
+router9.post("/stats/seed", auth2, (_req, res) => {
+  res.status(410).json({ success: false, error: "Synthetic dashboard data is disabled" });
 });
 router9.get("/settings", (req, res) => {
   try {
@@ -15614,7 +16657,7 @@ var import_express10 = require("express");
 init_database();
 init_role();
 var router10 = (0, import_express10.Router)();
-router10.get("/permissions", auth2, (req, res) => {
+router10.get("/permissions", requireRoles("admin", "director"), (req, res) => {
   try {
     const perms = database_default.prepare(`SELECT * FROM role_permissions`).all();
     const permissionsMap = {};
@@ -15639,7 +16682,7 @@ router10.get("/permissions", auth2, (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-router10.put("/permissions", auth2, (req, res) => {
+router10.put("/permissions", requireRoles("admin", "director"), (req, res) => {
   try {
     const userRole = mapRoleToDb(req.session?.user?.role);
     if (userRole !== "admin" && userRole !== "director") {
@@ -15714,7 +16757,7 @@ init_database();
 var import_genai4 = require("@google/genai");
 var import_mammoth2 = __toESM(require("mammoth"), 1);
 var router11 = import_express11.default.Router();
-router11.post("/legal_documents/parse-file", upload.single("file"), async (req, res) => {
+router11.post("/legal_documents/parse-file", requirePermission("manageLegalDocs"), upload.single("file"), async (req, res) => {
   try {
     const file = req.file;
     if (!file) {
@@ -15853,20 +16896,20 @@ ${textContent}`
         console.error("Gemini parse failed, falling back to basic extraction:", geminiErr);
       }
     }
-    const defaultData = {
+    const extractedData = {
       title: filename.substring(0, filename.lastIndexOf(".")),
       refNumber: "",
-      type: fileExt === ".pdf" ? "Lu\u1EADt" : "Kh\xE1c",
-      dateStr: (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
+      type: "",
+      dateStr: "",
       effectiveDateStr: "",
-      agency: "Qu\u1ED1c h\u1ED9i",
+      agency: "",
       signer: "",
-      category: "D\xE2n s\u1EF1",
-      status: "C\xF2n hi\u1EC7u l\u1EF1c",
+      category: "",
+      status: "",
       summary: `T\u1EC7p v\u0103n b\u1EA3n ${filename} \u0111\u01B0\u1EE3c t\u1EA3i l\xEAn h\u1EC7 th\u1ED1ng.`,
       content: textContent || `[N\u1ED9i dung t\u1EEB t\u1EC7p: ${filename}]`
     };
-    return res.json({ success: true, data: defaultData });
+    return res.json({ success: true, data: extractedData });
   } catch (error) {
     console.error("File parse route error:", error);
     res.status(500).json({ error: error.message || "L\u1ED7i khi x\u1EED l\xFD t\u1EC7p tin." });
@@ -15923,7 +16966,7 @@ router11.get("/legal_documents/history", auth2, (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-router11.post("/legal_documents", auth2, (req, res) => {
+router11.post("/legal_documents", requirePermission("manageLegalDocs"), (req, res) => {
   try {
     const { title, document_number, issue_date, effective_date, agency, signer, content, status, summary, category } = req.body;
     const created_at = (/* @__PURE__ */ new Date()).toISOString();
@@ -15951,7 +16994,7 @@ router11.post("/legal_documents", auth2, (req, res) => {
     res.status(400).json({ error: error.message });
   }
 });
-router11.put("/legal_documents/:id", auth2, (req, res) => {
+router11.put("/legal_documents/:id", requirePermission("manageLegalDocs"), (req, res) => {
   try {
     const { title, document_number, issue_date, effective_date, agency, signer, content, status, summary, category } = req.body;
     const { id } = req.params;
@@ -15980,13 +17023,13 @@ router11.put("/legal_documents/:id", auth2, (req, res) => {
     res.status(400).json({ error: error.message });
   }
 });
-router11.delete("/legal_documents/:id", auth2, (req, res) => {
+router11.delete("/legal_documents/:id", requirePermission("manageLegalDocs"), (req, res) => {
   try {
     const { id } = req.params;
     let docTitle = "V\u0103n b\u1EA3n #" + id;
     try {
-      const doc4 = database_default.prepare("SELECT title FROM legal_documents WHERE id = ?").get(id);
-      if (doc4) docTitle = doc4.title;
+      const doc3 = database_default.prepare("SELECT title FROM legal_documents WHERE id = ?").get(id);
+      if (doc3) docTitle = doc3.title;
     } catch (err) {
       console.warn("Failed to find doc title for delete log:", err);
     }
@@ -16020,11 +17063,34 @@ var import_fs9 = __toESM(require("fs"), 1);
 init_database();
 init_firebase();
 var import_firestore3 = require("firebase/firestore");
+init_role();
 var router12 = (0, import_express12.Router)();
 var activeAlerts = [];
-var baseWafBlocks = 0;
 var baseBandwidth = 0;
-router12.post("/audit-logs", (req, res) => {
+function getEffectiveSystemUser(req) {
+  const sessionUser = req.user || req.session?.user;
+  if (!sessionUser) return null;
+  try {
+    let currentUser = null;
+    if (sessionUser.id) {
+      currentUser = database_default.prepare("SELECT id, username, name, role, account_type, title FROM users WHERE id = ?").get(sessionUser.id);
+    }
+    if (!currentUser && sessionUser.username) {
+      currentUser = database_default.prepare("SELECT id, username, name, role, account_type, title FROM users WHERE username = ? LIMIT 1").get(sessionUser.username);
+    }
+    return currentUser ? { ...sessionUser, ...currentUser } : sessionUser;
+  } catch (error) {
+    return sessionUser;
+  }
+}
+function canMonitorSystem(user) {
+  const role = mapRoleToDb(user?.role);
+  const username = String(user?.username || user?.email || "").trim().toLowerCase();
+  const name = String(user?.name || "").trim().toLowerCase();
+  const title = String(user?.title || "").trim().toLowerCase();
+  return ["admin", "director", "deputyDirector", "controller", "manager"].includes(role) || username === "admin" || username.includes("admin") || name.includes("qu\u1EA3n tr\u1ECB") || name.includes("admin") || title.includes("qu\u1EA3n tr\u1ECB") || title.includes("admin") || title.includes("gi\xE1m \u0111\u1ED1c") || title.includes("giam doc");
+}
+router12.post("/audit-logs", auth2, (req, res) => {
   try {
     const { user, action, target, role, status } = req.body;
     const timeStr = (/* @__PURE__ */ new Date()).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -16042,27 +17108,25 @@ router12.post("/audit-logs", (req, res) => {
     res.status(500).json({ success: false, error: String(e) });
   }
 });
-router12.get("/status", (req, res) => {
+router12.get("/status", auth2, (req, res) => {
   let realAuditLogs = [];
   try {
-    const staffUsers = database_default.prepare("SELECT name, username, role FROM users WHERE role != 'client'").all();
+    const staffUsers = SharedDirectoryService.listPersonnel({
+      includeAdmins: true,
+      includePartners: true
+    });
     const getRealUser = (idx, defaultRole = "staff") => {
       if (staffUsers && staffUsers.length > 0) {
         const u = staffUsers[idx % staffUsers.length];
         return { name: u.name || u.username, role: u.role || defaultRole };
       }
-      return { name: "Qu\u1EA3n tr\u1ECB vi\xEAn", role: "admin" };
+      return { name: "Kh\xF4ng x\xE1c \u0111\u1ECBnh", role: defaultRole };
     };
     const logs = database_default.prepare("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 50").all();
     if (logs && logs.length > 0) {
       realAuditLogs = logs.map((l, i) => {
         let userName = l.user;
         let userRole = l.user?.toLowerCase().includes("admin") || l.user?.toLowerCase().includes("gi\xE1m \u0111\u1ED1c") ? "admin" : "staff";
-        if (!userName || userName.includes("Nguy\u1EC5n V\u0103n A") || userName.includes("Tr\u1EA7n Minh B") || userName.includes("L\xEA Th\u1ECB Mai") || userName === "System OCR" || userName === "System WAF") {
-          const realU = getRealUser(i, userRole);
-          userName = realU.name;
-          userRole = realU.role;
-        }
         return {
           id: l.id,
           time: l.time || (/* @__PURE__ */ new Date()).toLocaleTimeString("vi-VN"),
@@ -16073,33 +17137,6 @@ router12.get("/status", (req, res) => {
           status: l.action?.toLowerCase().includes("ch\u1EB7n") || l.action?.toLowerCase().includes("t\u1EEB ch\u1ED1i") ? "\u0110\xE3 ch\u1EB7n" : "Th\xE0nh c\xF4ng"
         };
       });
-    } else {
-      const u0 = getRealUser(0, "admin");
-      const u1 = getRealUser(1, "staff");
-      const u2 = getRealUser(2, "staff");
-      const u3 = getRealUser(3, "staff");
-      const defaultLogs = [
-        { user: u0.name, action: "\u0110\xE3 c\u1EADp nh\u1EADt H\u1EE3p \u0111\u1ED3ng d\u1ECBch v\u1EE5 ph\xE1p l\xFD HS-2026", target: "H\u1ED3 s\u01A1 HS-2026", role: u0.role, status: "Th\xE0nh c\xF4ng" },
-        { user: u1.name, action: "\u0110\xE3 ch\u1EA5m c\xF4ng \u0111\xFAng gi\u1EDD th\xE0nh c\xF4ng", target: "AI Face Recognition", role: u1.role, status: "Th\xE0nh c\xF4ng" },
-        { user: u2.name, action: "S\u1ED1 h\xF3a OCR th\xE0nh c\xF4ng t\xE0i li\u1EC7u v\u1EE5 vi\u1EC7c DS-2026", target: "C\u0103n c\u01B0\u1EDBc / H\u1ED3 s\u01A1", role: u2.role, status: "Th\xE0nh c\xF4ng" },
-        { user: u3.name, action: "X\xE1c th\u1EF1c b\u1EA3o m\u1EADt t\xE0i kho\u1EA3n nh\xE2n s\u1EF1", target: "H\u1EC7 th\u1ED1ng ERP", role: u3.role, status: "Th\xE0nh c\xF4ng" },
-        { user: u0.name, action: "Ph\xEA duy\u1EC7t b\u1EA3ng l\u01B0\u01A1ng nh\xE2n s\u1EF1 th\xE1ng 07/2026", target: "B\u1EA3ng l\u01B0\u01A1ng", role: u0.role, status: "Th\xE0nh c\xF4ng" }
-      ];
-      defaultLogs.forEach((il, i) => {
-        try {
-          database_default.prepare(`INSERT INTO audit_logs VALUES (?,?,?,?)`).run(
-            (Date.now() - i * 6e4).toString(),
-            il.user,
-            il.action,
-            (/* @__PURE__ */ new Date()).toLocaleTimeString("vi-VN")
-          );
-        } catch (e) {
-        }
-      });
-      realAuditLogs = defaultLogs.map((l) => ({
-        ...l,
-        time: (/* @__PURE__ */ new Date()).toLocaleTimeString("vi-VN")
-      }));
     }
   } catch (e) {
   }
@@ -16124,12 +17161,21 @@ router12.get("/status", (req, res) => {
     }
   } catch (e) {
   }
-  const cpuUsage = import_os2.default.loadavg()[0] || 0;
+  const cpuCount = Math.max(1, import_os2.default.cpus().length);
+  const cpuUsage = Math.min(100, (import_os2.default.loadavg()[0] || 0) / cpuCount * 100);
   const memUsage = process.memoryUsage();
   const usedMemMB = memUsage.rss / 1024 / 1024;
-  const totalMemMB = 512;
-  const usedMemPercent = usedMemMB / totalMemMB * 100;
-  const totalDisk = 200;
+  const memoryMetrics = MemoryMonitor.getMetrics();
+  const totalMemMB = memoryMetrics.memoryLimit / 1024 / 1024;
+  const usedMemPercent = memoryMetrics.memoryPercent;
+  let totalDisk = 0;
+  try {
+    if (import_fs9.default.existsSync(dbPath2) && typeof import_fs9.default.statfsSync === "function") {
+      const diskStats = import_fs9.default.statfsSync(dbPath2);
+      totalDisk = Number(diskStats.blocks) * Number(diskStats.bsize) / (1024 * 1024 * 1024);
+    }
+  } catch (e) {
+  }
   const networkIn = 0;
   const networkOut = 0;
   let dbConnections = 1;
@@ -16183,8 +17229,10 @@ router12.get("/status", (req, res) => {
   let chartData = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   try {
     const allLogs = database_default.prepare("SELECT * FROM audit_logs").all();
-    loginsToday = allLogs.filter((l) => l.action?.toLowerCase().includes("\u0111\u0103ng nh\u1EADp") && !l.action?.toLowerCase().includes("th\u1EA5t b\u1EA1i") && !l.action?.toLowerCase().includes("sai")).length;
-    loginsFailedToday = allLogs.filter((l) => l.action?.toLowerCase().includes("th\u1EA5t b\u1EA1i") || l.action?.toLowerCase().includes("sai")).length;
+    const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    const todayLogs = allLogs.filter((log) => String(log.performedAt || log.time || log.created_at || "").slice(0, 10) === today);
+    loginsToday = todayLogs.filter((l) => l.action?.toLowerCase().includes("\u0111\u0103ng nh\u1EADp") && !l.action?.toLowerCase().includes("th\u1EA5t b\u1EA1i") && !l.action?.toLowerCase().includes("sai")).length;
+    loginsFailedToday = todayLogs.filter((l) => l.action?.toLowerCase().includes("th\u1EA5t b\u1EA1i") || l.action?.toLowerCase().includes("sai")).length;
     if (loginsToday > 0) {
       chartData[11] = loginsToday;
     }
@@ -16209,9 +17257,9 @@ router12.get("/status", (req, res) => {
     storageUsed: storageRealUsed.toFixed(4),
     storageTotal: totalDisk,
     bandwidthUsed: baseBandwidth.toFixed(2),
-    attacksBlocked: baseWafBlocks,
+    attacksBlocked: systemLogs.length,
     attacksBlockedIncrease: 0,
-    uptimePercent: 99.98.toFixed(3)
+    uptimePercent: null
   };
   const suspiciousIPs = activeAlerts.filter((a) => a.title.includes("IP \u0111\xE1ng ng\u1EDD")).length;
   const unauthorizedAccess = activeAlerts.filter((a) => a.title.includes("Truy c\u1EADp tr\xE1i ph\xE9p")).length;
@@ -16227,11 +17275,12 @@ router12.get("/status", (req, res) => {
       platform: import_os2.default.platform(),
       osRelease: import_os2.default.release(),
       nodeVersion: process.version,
-      diskUsage: storageRealUsed / totalDisk * 100,
+      diskUsage: totalDisk > 0 ? Math.min(100, storageRealUsed / totalDisk * 100) : 0,
       totalDisk,
       usedDisk: storageRealUsed.toFixed(4),
       networkIn,
       networkOut,
+      networkSource: "UNAVAILABLE",
       logs: activeAlerts,
       activeConnections: realActiveConnections,
       adminSessions: realAdminSessions,
@@ -16240,7 +17289,7 @@ router12.get("/status", (req, res) => {
       suspiciousIPs,
       unauthorizedAccess,
       status: activeAlerts.length > 0 ? "warning" : "ok",
-      wafBlocks: baseWafBlocks,
+      wafBlocks: systemLogs.length,
       dbStatus,
       loginStats,
       auditLogs: realAuditLogs,
@@ -16248,7 +17297,7 @@ router12.get("/status", (req, res) => {
     }
   });
 });
-router12.post("/metrics", (req, res) => {
+router12.post("/metrics", auth2, (req, res) => {
   try {
     const { id, metric_type, value, details, timestamp } = req.body;
     database_default.prepare(`
@@ -16265,7 +17314,7 @@ router12.post("/metrics", (req, res) => {
     res.status(500).json({ success: false, error: String(e) });
   }
 });
-router12.post("/qa-evaluation", (req, res) => {
+router12.post("/qa-evaluation", auth2, (req, res) => {
   try {
     const { id, call_id, staff_name, score, has_violation, violated_keywords, audited_at, details } = req.body;
     database_default.prepare(`
@@ -16294,7 +17343,7 @@ router12.post("/qa-evaluation", (req, res) => {
     res.status(500).json({ success: false, error: String(e) });
   }
 });
-router12.get("/qa-evaluations", (req, res) => {
+router12.get("/qa-evaluations", auth2, (req, res) => {
   try {
     const staffName = req.query.staffName;
     let query2 = "SELECT * FROM quality_assurance_evaluations";
@@ -16310,7 +17359,7 @@ router12.get("/qa-evaluations", (req, res) => {
     res.status(500).json({ success: false, error: String(e) });
   }
 });
-router12.get("/metrics", (req, res) => {
+router12.get("/metrics", auth2, (req, res) => {
   try {
     const rows = database_default.prepare("SELECT * FROM system_performance_metrics ORDER BY timestamp DESC LIMIT 100").all();
     res.json({ success: true, data: rows });
@@ -16318,21 +17367,21 @@ router12.get("/metrics", (req, res) => {
     res.status(500).json({ success: false, error: String(e) });
   }
 });
-router12.get("/sync-audit", async (req, res) => {
+router12.get("/sync-audit", auth2, async (req, res) => {
   try {
     const localCases = database_default.prepare("SELECT * FROM cases").all();
     const casesColRef = (0, import_firestore3.collection)(db, "cases");
     const casesSnapshot = await (0, import_firestore3.getDocs)(casesColRef);
     const remoteCasesMap = /* @__PURE__ */ new Map();
-    casesSnapshot.forEach((doc4) => {
-      remoteCasesMap.set(doc4.id, doc4.data());
+    casesSnapshot.forEach((doc3) => {
+      remoteCasesMap.set(doc3.id, doc3.data());
     });
     const localErpRecords = database_default.prepare("SELECT * FROM erp_records").all();
     const erpColRef = (0, import_firestore3.collection)(db, "erp_records");
     const erpSnapshot = await (0, import_firestore3.getDocs)(erpColRef);
     const remoteErpMap = /* @__PURE__ */ new Map();
-    erpSnapshot.forEach((doc4) => {
-      remoteErpMap.set(doc4.id, doc4.data());
+    erpSnapshot.forEach((doc3) => {
+      remoteErpMap.set(doc3.id, doc3.data());
     });
     const auditItems = [];
     const processedCaseIds = /* @__PURE__ */ new Set();
@@ -16448,7 +17497,7 @@ router12.get("/sync-audit", async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
-router12.post("/sync-override", async (req, res) => {
+router12.post("/sync-override", auth2, async (req, res) => {
   try {
     const { id, tableName, direction } = req.body;
     if (!id || !tableName || !direction) {
@@ -16540,14 +17589,19 @@ router12.post("/sync-override", async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
-router12.get("/global-search", async (req, res) => {
+router12.get("/global-search", auth2, async (req, res) => {
   try {
+    const currentUser = req.user || req.session?.user || null;
+    if (!currentUser) {
+      return res.status(401).json({ success: false, error: "Authentication required." });
+    }
     const queryStr = (req.query.q || "").trim();
     if (!queryStr) {
       return res.json({ success: true, results: { clients: [], cases: [], documents: [] } });
     }
     const normalizedQuery = queryStr.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
     const searchLike = `%${queryStr}%`;
+    const isClient = String(currentUser.role || "").toLowerCase() === "client";
     const erpRows = database_default.prepare("SELECT * FROM erp_records").all();
     const allErpRecords = erpRows.map((row) => {
       try {
@@ -16557,7 +17611,12 @@ router12.get("/global-search", async (req, res) => {
       }
     }).filter(Boolean);
     const clientMap = /* @__PURE__ */ new Map();
-    allErpRecords.forEach((record) => {
+    const scopedErpRecords = isClient ? allErpRecords.filter((record) => {
+      const matchClient = record.client === currentUser.name || record.clientIdCard === currentUser.username || record.clientPhone === currentUser.phone;
+      const matchCase = currentUser.case_id && String(currentUser.case_id) === String(record.id);
+      return matchClient || matchCase;
+    }) : allErpRecords;
+    scopedErpRecords.forEach((record) => {
       const cccd = (record.clientIdCard || record.contractDetails?.customerIdCard || record.contractDetails?.obligorIdCard || "").trim();
       const clientName = (record.client || "").trim();
       const taxId = (record.taxCode || record.taxId || record.contractDetails?.obligorBusinessId || "").trim();
@@ -16602,7 +17661,7 @@ router12.get("/global-search", async (req, res) => {
       }
     });
     const matchedCases = [];
-    allErpRecords.forEach((record) => {
+    scopedErpRecords.forEach((record) => {
       const titleNorm = (record.title || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
       const idNorm = (record.id || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
       const clientNorm = (record.client || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -16848,12 +17907,11 @@ router12.delete("/gmail-accounts/:email", async (req, res) => {
 });
 router12.get("/memory", auth2, (req, res) => {
   try {
-    const user = req.user || req.session?.user;
+    const user = getEffectiveSystemUser(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access: login required" });
     }
-    const role = user.role?.toLowerCase();
-    if (role !== "admin" && role !== "director" && role !== "deputyDirector" && role !== "controller" && role !== "manager") {
+    if (!canMonitorSystem(user)) {
       return res.status(403).json({ error: "Access Denied: Admin or system monitoring role required" });
     }
     const current = MemoryMonitor.getMetrics();
@@ -16923,12 +17981,11 @@ router12.get("/memory", auth2, (req, res) => {
 });
 router12.get("/memory/events", auth2, (req, res) => {
   try {
-    const user = req.user || req.session?.user;
+    const user = getEffectiveSystemUser(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized" });
     }
-    const role = user.role?.toLowerCase();
-    if (role !== "admin" && role !== "director" && role !== "deputyDirector" && role !== "controller" && role !== "manager") {
+    if (!canMonitorSystem(user)) {
       return res.status(403).json({ error: "Access Denied" });
     }
     const limit2 = parseInt(req.query.limit || "10", 10);
@@ -17040,6 +18097,7 @@ var system_routes_default = router12;
 var import_express13 = require("express");
 init_database();
 init_role();
+init_SystemDataAccess();
 var router13 = (0, import_express13.Router)();
 var checkFinancePermission = (req, res, next) => {
   const user = req.session.user;
@@ -17162,15 +18220,14 @@ router13.get("/assets-debts", auth2, checkFinancePermission, (req, res) => {
   try {
     const assets = database_default.prepare("SELECT * FROM company_assets ORDER BY id DESC").all();
     const debts = database_default.prepare("SELECT * FROM company_debts ORDER BY id DESC").all();
-    const erpRecords = database_default.prepare("SELECT * FROM erp_records").all();
+    const erpRecords = SystemDataAccess.getAllRecords();
     const erpDebts = [];
-    for (const r of erpRecords) {
+    for (const d of erpRecords) {
       try {
-        const d = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
         const remFee = Number(d?.remainingFee !== void 0 ? d.remainingFee : d?.debt || 0);
         if (remFee > 0) {
           const clientName = d.clientName || d.client || "Kh\xE1ch h\xE0ng";
-          const caseId = d.id || r.id;
+          const caseId = d.id;
           const exists = debts.some((item) => String(item.description || "").includes(caseId));
           if (!exists) {
             erpDebts.push({
@@ -17344,11 +18401,10 @@ router13.get("/performance", auth2, checkFinancePermission, (req, res) => {
   try {
     const thuTrans = database_default.prepare("SELECT SUM(amount) as s FROM finance_transactions WHERE type='thu' AND status='completed'").get();
     let totalThu = thuTrans?.s || 0;
-    const erpRecords = database_default.prepare("SELECT data FROM erp_records").all();
+    const erpRecords = SystemDataAccess.getAllRecords();
     let erpTotalRevenue = 0;
-    for (const r of erpRecords) {
+    for (const d of erpRecords) {
       try {
-        const d = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
         if (d && d.feeAmount) {
           erpTotalRevenue += Number(String(d.feeAmount).replace(/,/g, "")) || 0;
         } else if (d && d.revenue) {
@@ -17395,14 +18451,13 @@ router13.get("/staff-commissions", auth2, checkFinancePermission, (req, res) => 
       FROM users 
       WHERE role != 'client'
     `).all();
-    const records = database_default.prepare("SELECT data FROM erp_records").all();
+    const records = SystemDataAccess.getAllRecords();
     const results = staff.map((s) => {
       let earnedCommission = 0;
       let earnedCompletionReward = 0;
       const associatedCases = [];
-      records.forEach((r) => {
+      records.forEach((data) => {
         try {
-          const data = JSON.parse(r.data);
           if (data.mainAssignee === s.name || data.mainAssignee === s.username) {
             const revenue = Number(data.revenue || data.feeAmount || 0);
             const commission = revenue * ((s.commission_percent || 5) / 100);
@@ -17518,7 +18573,6 @@ var emitCallUpdate = (req, eventName, data) => {
   }
 };
 var activeCalls = /* @__PURE__ */ new Map();
-var peakConcurrentCallsSeed = 14;
 function calculatePeakConcurrent(calls) {
   if (calls.length === 0) return 0;
   const events = [];
@@ -17771,8 +18825,12 @@ router14.get("/stats", auth2, (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-router14.get("/realtime", (req, res) => {
+router14.get("/realtime", auth2, (req, res) => {
   try {
+    const currentUser = req.user || req.session?.user;
+    if (!currentUser) {
+      return res.status(401).json({ error: "Y\xEAu c\u1EA7u \u0111\u0103ng nh\u1EADp." });
+    }
     const now = Date.now();
     for (const [id, call] of activeCalls.entries()) {
       const startTimeStr = call.start_time || call.timestamp || call.created_at;
@@ -17781,10 +18839,20 @@ router14.get("/realtime", (req, res) => {
         activeCalls.delete(id);
       }
     }
-    const data = Array.from(activeCalls.values());
+    const mappedRole = mapRoleToDb(currentUser.role);
+    const canViewAll = isManagementRole(mappedRole);
+    const userName = currentUser.name || currentUser.username || "";
+    const userBranch = currentUser.branch || "";
+    const data = Array.from(activeCalls.values()).filter((call) => {
+      if (canViewAll && (mappedRole !== "manager" && mappedRole !== "head_of_department" || !userBranch)) return true;
+      if (canViewAll && (mappedRole === "manager" || mappedRole === "head_of_department")) {
+        return !userBranch || call.branch === userBranch || call.office_id === userBranch;
+      }
+      return call.staffName === userName || call.employee_id === userName;
+    });
     res.json({
       currentConcurrent: data.length,
-      peakConcurrent: Math.max(peakConcurrentCallsSeed, data.length),
+      peakConcurrent: calculatePeakConcurrent(data),
       activeCalls: data
     });
   } catch (err) {
@@ -18386,7 +19454,22 @@ var calls_routes_default = router14;
 var import_express15 = require("express");
 
 // src/modules/payment/payment.bank.ts
+var import_crypto = __toESM(require("crypto"), 1);
 var BankingGateway = class {
+  verifySignature(payload, signature) {
+    if (!config.BANK_WEBHOOK_SECRET) return false;
+    if (!signature) return false;
+    const rawPayload = typeof payload === "string" ? payload : JSON.stringify(payload);
+    const expected = import_crypto.default.createHmac("sha256", config.BANK_WEBHOOK_SECRET).update(rawPayload).digest("hex");
+    try {
+      return import_crypto.default.timingSafeEqual(Buffer.from(expected), Buffer.from(signature.trim().toLowerCase()));
+    } catch {
+      return false;
+    }
+  }
+  isConfigured() {
+    return Boolean(config.BANK_WEBHOOK_SECRET && config.BANK_ACCOUNT_NUMBER);
+  }
   async receiveTransaction(tx) {
     console.log(`[BankingGateway] Received transaction: ID=${tx.transactionId}, Ref=${tx.transferContent}, Amount=${tx.amount}`);
     paymentEventBus.publish({
@@ -18414,8 +19497,8 @@ var BankingGateway = class {
   }
   async getBalance() {
     return {
-      accountNumber: "0383111222",
-      balance: 158e7,
+      accountNumber: config.BANK_ACCOUNT_NUMBER,
+      balance: 0,
       currency: "VND"
     };
   }
@@ -18706,13 +19789,13 @@ var aiFinancialAssistant = new AiFinancialAssistant();
 
 // src/modules/payment/payment.report.ts
 init_database();
+init_SystemDataAccess();
 var FinancialReportEngine = class {
   getSummaryReport() {
     try {
-      const erpRows = database_default.prepare("SELECT * FROM erp_records").all();
-      erpRows.forEach((row) => {
+      const erpRows = SystemDataAccess.getAllRecords();
+      erpRows.forEach((parsed) => {
         try {
-          const parsed = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
           if (parsed && parsed.id) {
             const caseId = parsed.id;
             const existingPayment = database_default.prepare("SELECT * FROM payments WHERE case_id = ?").get(caseId);
@@ -18828,6 +19911,7 @@ var FinancialReportEngine = class {
 var financialReportEngine = new FinancialReportEngine();
 
 // src/modules/payment/payment.controller.ts
+init_SystemDataAccess();
 init_database();
 var PaymentController = class {
   /**
@@ -18840,9 +19924,8 @@ var PaymentController = class {
       const baseUrl = `${req.protocol}://${req.get("host")}`;
       let payment = paymentRepository.findPaymentByCaseId(caseId);
       if (!payment) {
-        const erpRow = database_default.prepare("SELECT data FROM erp_records WHERE id = ?").get(caseId);
-        if (erpRow) {
-          const parsed = JSON.parse(erpRow.data);
+        const parsed = SystemDataAccess.getRecordById(caseId);
+        if (parsed) {
           const caseCode = parsed.contractId || parsed.systemId || caseId;
           const clientName = parsed.client || "Kh\xE1ch h\xE0ng";
           const contractVal = Number(parsed.revenue || parsed.feeAmount || 0);
@@ -18888,13 +19971,16 @@ var PaymentController = class {
   async receiveBankWebhook(req, res) {
     try {
       const { transactionId, bankCode, accountNumber, amount, transferContent, transactionTime, signature } = req.body;
-      if (!transferContent || !amount) {
-        return res.status(400).json({ success: false, error: "N\u1ED9i dung chuy\u1EC3n kho\u1EA3n ho\u1EB7c s\u1ED1 ti\u1EC1n kh\xF4ng h\u1EE3p l\u1EC7" });
+      if (!transferContent || !amount || !accountNumber || !signature) {
+        return res.status(400).json({ success: false, error: "Thi\u1EBFu n\u1ED9i dung chuy\u1EC3n kho\u1EA3n, s\u1ED1 ti\u1EC1n, t\xE0i kho\u1EA3n nh\u1EADn ho\u1EB7c ch\u1EEF k\xFD webhook" });
+      }
+      if (!bankingGateway.isConfigured() || !bankingGateway.verifySignature(req.body, signature)) {
+        return res.status(401).json({ success: false, error: "Webhook ng\xE2n h\xE0ng ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh ho\u1EB7c ch\u1EEF k\xFD kh\xF4ng h\u1EE3p l\u1EC7" });
       }
       const tx = {
         transactionId: transactionId || `FT${Date.now()}`,
-        bankCode: bankCode || "MB",
-        accountNumber: accountNumber || "0383111222",
+        bankCode: String(bankCode || "").trim(),
+        accountNumber: String(accountNumber).trim(),
         amount: Number(amount),
         transferContent: String(transferContent).trim(),
         transactionTime: transactionTime || (/* @__PURE__ */ new Date()).toISOString(),
@@ -19106,38 +20192,21 @@ router16.get("/employees", auth2, (req, res) => {
     let nextCursor = null;
     let hasNextPage = false;
     if (limit2 !== null) {
-      const params = {};
-      let query2 = `
-        SELECT id, username, name, role, title, staff_code, branch, start_date, 
-               contract_type, salary, bonus, avatar, phone, email, dob, gender, address, 
-               manager_id, practice_areas
-        FROM users 
-        WHERE role != 'client'
-      `;
+      let cursorId;
       if (cursorStr) {
         const cursor = decodeCursor(cursorStr);
         if (cursor && cursor.id) {
-          query2 += ` AND id < :cursorId`;
-          params.cursorId = cursor.id;
+          cursorId = cursor.id;
         }
       }
-      query2 += ` ORDER BY id DESC LIMIT :limitPlusOne`;
-      params.limitPlusOne = limit2 + 1;
-      const rows = database_default.prepare(query2).all(params);
+      const rows = SharedDirectoryService.listStaffPage(cursorId, limit2 + 1);
       hasNextPage = rows.length > limit2;
       employees = hasNextPage ? rows.slice(0, limit2) : rows;
       if (hasNextPage && employees.length > 0) {
         nextCursor = encodeCursor({ id: employees[employees.length - 1].id });
       }
     } else {
-      employees = database_default.prepare(`
-        SELECT id, username, name, role, title, staff_code, branch, start_date, 
-               contract_type, salary, bonus, avatar, phone, email, dob, gender, address, 
-               manager_id, practice_areas
-        FROM users 
-        WHERE role != 'client'
-        ORDER BY id DESC
-      `).all();
+      employees = SharedDirectoryService.listStaff();
     }
     const enriched = employees.map((emp) => ({
       ...emp,
@@ -19170,7 +20239,7 @@ router16.get("/employees", auth2, (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-router16.post("/employees", auth2, (req, res) => {
+router16.post("/employees", requirePermission("manageUsers"), (req, res) => {
   try {
     const { username, name, role, title, branch, salary, phone, email, dob, gender, address, department } = req.body;
     const staff_code = req.body.staff_code || `NV-${Math.floor(1e3 + Math.random() * 9e3)}`;
@@ -19189,27 +20258,12 @@ router16.post("/employees", auth2, (req, res) => {
 router16.get("/departments", auth2, (req, res) => {
   try {
     const depts = database_default.prepare("SELECT * FROM hr_departments").all();
-    if (depts.length === 0) {
-      const seedDepts = [
-        { id: "DEPT-01", department_name: "Ban Gi\xE1m \u0111\u1ED1c & \u0110i\u1EC1u h\xE0nh", manager_id: "1", description: "L\xE3nh \u0111\u1EA1o & \u0111\u1ECBnh h\u01B0\u1EDBng chi\u1EBFn l\u01B0\u1EE3c", status: "Active" },
-        { id: "DEPT-02", department_name: "Ph\xF2ng T\u1ED1 t\u1EE5ng & D\xE2n s\u1EF1", manager_id: "2", description: "Tranh t\u1EE5ng t\xF2a \xE1n, \u0111\u1EA1i di\u1EC7n ph\xE1p l\xFD", status: "Active" },
-        { id: "DEPT-03", department_name: "Ph\xF2ng Doanh nghi\u1EC7p & \u0110\u1EA7u t\u01B0", manager_id: "3", description: "T\u01B0 v\u1EA5n h\u1EE3p \u0111\u1ED3ng, M&A, Gi\u1EA5y ph\xE9p", status: "Active" },
-        { id: "DEPT-04", department_name: "Ph\xF2ng H\xE0nh ch\xEDnh - Nh\xE2n s\u1EF1", manager_id: "4", description: "Tuy\u1EC3n d\u1EE5ng, ch\u1EA5m c\xF4ng, t\xEDnh l\u01B0\u01A1ng, ISO", status: "Active" },
-        { id: "DEPT-05", department_name: "Ph\xF2ng K\u1EBF to\xE1n & T\xE0i ch\xEDnh", manager_id: "5", description: "Thu chi, h\xF3a \u0111\u01A1n, thu\u1EBF, b\xE1o c\xE1o t\xE0i ch\xEDnh", status: "Active" },
-        { id: "DEPT-06", department_name: "Ph\xF2ng Marketing & Truy\u1EC1n th\xF4ng", manager_id: "6", description: "Nh\u1EADn di\u1EC7n th\u01B0\u01A1ng hi\u1EC7u, kh\xE1ch h\xE0ng m\u1EDBi", status: "Active" },
-        { id: "DEPT-07", department_name: "Trung t\xE2m Kh\xE1ch h\xE0ng & Call Center", manager_id: "7", description: "T\u1ED5ng \u0111\xE0i t\u01B0 v\u1EA5n 24/7 & CSKH", status: "Active" }
-      ];
-      for (const d of seedDepts) {
-        database_default.prepare("INSERT OR REPLACE INTO hr_departments (id, department_name, manager_id, description, status) VALUES (?, ?, ?, ?, ?)").run(d.id, d.department_name, d.manager_id, d.description, d.status);
-      }
-      return res.json({ success: true, data: seedDepts });
-    }
     res.json({ success: true, data: depts });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-router16.post("/departments", auth2, (req, res) => {
+router16.post("/departments", requirePermission("manageUsers"), (req, res) => {
   try {
     const { department_name, manager_id, description } = req.body;
     const id = `DEPT-${Date.now()}`;
@@ -19222,19 +20276,6 @@ router16.post("/departments", auth2, (req, res) => {
 router16.get("/positions", auth2, (req, res) => {
   try {
     const positions = database_default.prepare("SELECT * FROM hr_positions").all();
-    if (positions.length === 0) {
-      const seedPositions = [
-        { id: "POS-01", position_name: "Gi\xE1m \u0111\u1ED1c / Lu\u1EADt s\u01B0 \u0110i\u1EC1u h\xE0nh", level: 5, salary_grade: "L5-S1", permission_group: "Director" },
-        { id: "POS-02", position_name: "Tr\u01B0\u1EDFng ph\xF2ng / Lu\u1EADt s\u01B0 Th\xE0nh vi\xEAn", level: 4, salary_grade: "L4-S2", permission_group: "Manager" },
-        { id: "POS-03", position_name: "Lu\u1EADt s\u01B0 Ch\xEDnh / Senior Counsel", level: 3, salary_grade: "L3-S1", permission_group: "Lawyer" },
-        { id: "POS-04", position_name: "Chuy\xEAn vi\xEAn Ph\xE1p l\xFD / Associate", level: 2, salary_grade: "L2-S3", permission_group: "Staff" },
-        { id: "POS-05", position_name: "Th\u1EF1c t\u1EADp sinh / Legal Intern", level: 1, salary_grade: "L1-S1", permission_group: "Intern" }
-      ];
-      for (const p of seedPositions) {
-        database_default.prepare("INSERT OR REPLACE INTO hr_positions (id, position_name, level, salary_grade, permission_group) VALUES (?, ?, ?, ?, ?)").run(p.id, p.position_name, p.level, p.salary_grade, p.permission_group);
-      }
-      return res.json({ success: true, data: seedPositions });
-    }
     res.json({ success: true, data: positions });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -19243,19 +20284,6 @@ router16.get("/positions", auth2, (req, res) => {
 router16.get("/shifts", auth2, (req, res) => {
   try {
     const shifts = database_default.prepare("SELECT * FROM hr_shifts").all();
-    if (shifts.length === 0) {
-      const seedShifts = [
-        { id: "SHIFT-01", shift_name: "Ca s\xE1ng H\xE0nh ch\xEDnh", start_time: "07:30", end_time: "11:30", break_time: "11:30-13:00", late_allowance: 15, early_allowance: 15, working_days: "Mon-Sat" },
-        { id: "SHIFT-02", shift_name: "Ca chi\u1EC1u H\xE0nh ch\xEDnh", start_time: "13:00", end_time: "17:00", break_time: "12:00-13:00", late_allowance: 15, early_allowance: 15, working_days: "Mon-Sat" },
-        { id: "SHIFT-03", shift_name: "Ca t\u1ED1i / Tr\u1EF1c ban T\xF2a \xE1n", start_time: "17:00", end_time: "22:00", break_time: "19:00-19:30", late_allowance: 10, early_allowance: 10, working_days: "Mon-Fri" },
-        { id: "SHIFT-04", shift_name: "Ca linh ho\u1EA1t (Flexible)", start_time: "08:30", end_time: "17:30", break_time: "12:00-13:00", late_allowance: 30, early_allowance: 30, working_days: "Mon-Fri" },
-        { id: "SHIFT-05", shift_name: "Ca Online / T\u01B0 v\u1EA5n t\u1EEB xa", start_time: "08:00", end_time: "20:00", break_time: "Linh ho\u1EA1t", late_allowance: 30, early_allowance: 30, working_days: "All" }
-      ];
-      for (const s of seedShifts) {
-        database_default.prepare("INSERT OR REPLACE INTO hr_shifts (id, shift_name, start_time, end_time, break_time, late_allowance, early_allowance, working_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(s.id, s.shift_name, s.start_time, s.end_time, s.break_time, s.late_allowance, s.early_allowance, s.working_days);
-      }
-      return res.json({ success: true, data: seedShifts });
-    }
     res.json({ success: true, data: shifts });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -19419,7 +20447,7 @@ router16.post("/leave", auth2, (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-router16.put("/leave/:id/approve", auth2, (req, res) => {
+router16.put("/leave/:id/approve", requirePermission("manageUsers"), (req, res) => {
   try {
     const { status, approved_by } = req.body;
     database_default.prepare("UPDATE hr_leave_requests SET status = ?, approved_by = ? WHERE id = ?").run(status || "Approved", approved_by || req.session.user?.name, req.params.id);
@@ -19441,7 +20469,7 @@ router16.post("/business-trip", auth2, (req, res) => {
     const { destination, start_date, end_date, budget, task_description } = req.body;
     const empId = String(req.session.user?.id || 1);
     const id = `TRIP-${Date.now()}`;
-    database_default.prepare("INSERT INTO hr_business_trips (id, employee_id, destination, start_date, end_date, budget, task_description, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(id, empId, destination, start_date, end_date, budget || 0, task_description || "", "Approved");
+    database_default.prepare("INSERT INTO hr_business_trips (id, employee_id, destination, start_date, end_date, budget, task_description, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(id, empId, destination, start_date, end_date, budget || 0, task_description || "", "Pending");
     res.json({ success: true, id });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -19460,7 +20488,7 @@ router16.post("/overtime", auth2, (req, res) => {
     const { date, ot_hours, multiplier, reason } = req.body;
     const empId = String(req.session.user?.id || 1);
     const id = `OT-${Date.now()}`;
-    database_default.prepare("INSERT INTO hr_overtimes (id, employee_id, date, ot_hours, multiplier, reason, status) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, empId, date || (/* @__PURE__ */ new Date()).toISOString().split("T")[0], ot_hours || 2, multiplier || 1.5, reason || "H\u1ED3 s\u01A1 g\u1EA5p", "Approved");
+    database_default.prepare("INSERT INTO hr_overtimes (id, employee_id, date, ot_hours, multiplier, reason, status) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, empId, date || (/* @__PURE__ */ new Date()).toISOString().split("T")[0], ot_hours || 2, multiplier || 1.5, reason || "H\u1ED3 s\u01A1 g\u1EA5p", "Pending");
     res.json({ success: true, id });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -19469,8 +20497,9 @@ router16.post("/overtime", auth2, (req, res) => {
 router16.get("/payroll", auth2, (req, res) => {
   try {
     const { month, year } = req.query;
-    const m = Number(month || 7);
-    const y = Number(year || 2026);
+    const now = /* @__PURE__ */ new Date();
+    const m = Number(month || now.getMonth() + 1);
+    const y = Number(year || now.getFullYear());
     const rows = database_default.prepare(`
       SELECT p.*, u.name as employee_name, u.staff_code, u.title, u.branch
       FROM hr_payrolls p
@@ -19478,43 +20507,6 @@ router16.get("/payroll", auth2, (req, res) => {
       WHERE p.month = ? AND p.year = ?
       ORDER BY u.id ASC
     `).all(m, y);
-    if (rows.length === 0) {
-      const users = database_default.prepare("SELECT * FROM users WHERE role != 'client'").all();
-      const generated = users.map((u) => {
-        const base = u.salary ? Number(String(u.salary).replace(/[^0-9]/g, "")) || 2e7 : 2e7;
-        const allowance = 15e5;
-        const bonus = Number(u.bonus) || 2e6;
-        const ot_salary = 12e5;
-        const insurance = Math.round(base * 0.105);
-        const taxable = Math.max(0, base + bonus + ot_salary - insurance - 11e6);
-        const tax = Math.round(taxable * 0.1);
-        const net = base + allowance + bonus + ot_salary - insurance - tax;
-        const id = `PAY-${u.id}-${m}-${y}`;
-        database_default.prepare(`
-          INSERT OR REPLACE INTO hr_payrolls (id, employee_id, month, year, base_salary, allowance, bonus, ot_salary, insurance, tax, net_salary, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(id, String(u.id), m, y, base, allowance, bonus, ot_salary, insurance, tax, net, "Approved");
-        return {
-          id,
-          employee_id: String(u.id),
-          employee_name: u.name,
-          staff_code: u.staff_code || `NV-${u.id}`,
-          title: u.title,
-          branch: u.branch,
-          month: m,
-          year: y,
-          base_salary: base,
-          allowance,
-          bonus,
-          ot_salary,
-          insurance,
-          tax,
-          net_salary: net,
-          status: "Approved"
-        };
-      });
-      return res.json({ success: true, data: generated });
-    }
     res.json({ success: true, data: rows });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -19571,44 +20563,10 @@ router16.get("/kpi", auth2, (req, res) => {
       SELECT p.*, u.name as employee_name, u.title, u.role
       FROM hr_performances p
       JOIN users u ON p.employee_id = CAST(u.id AS TEXT)
-      WHERE p.month = ? AND p.year = ?
+      WHERE p.month = ? AND p.year = ? AND LOWER(COALESCE(u.role, '')) <> 'admin' AND LOWER(COALESCE(u.username, '')) <> 'admin'
     `).all(m, y);
     if (kpis.length === 0) {
-      const users = database_default.prepare("SELECT * FROM users WHERE role != 'client'").all();
-      const seeded = users.map((u) => {
-        const id = `PERF-${u.id}-${m}-${y}`;
-        const isLawyer = String(u.role).includes("lawyer") || String(u.title).includes("Lu\u1EADt s\u01B0");
-        const billable = isLawyer ? 120 + Math.floor(Math.random() * 40) : 0;
-        const court = isLawyer ? 30 + Math.floor(Math.random() * 20) : 0;
-        const meetings = 25 + Math.floor(Math.random() * 15);
-        const kpi_score = 85 + Math.floor(Math.random() * 12);
-        const ai_score = 90 + Math.floor(Math.random() * 8);
-        const manager_score = 88 + Math.floor(Math.random() * 10);
-        const total = Math.round((kpi_score + ai_score + manager_score) / 3);
-        const rank = total >= 92 ? "A+" : total >= 85 ? "A" : "B";
-        database_default.prepare(`
-          INSERT OR REPLACE INTO hr_performances (id, employee_id, month, year, kpi_score, ai_score, manager_score, total_score, rank, billable_hours, non_billable_hours, court_time, client_meetings)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(id, String(u.id), m, y, kpi_score, ai_score, manager_score, total, rank, billable, 30, court, meetings);
-        return {
-          id,
-          employee_id: String(u.id),
-          employee_name: u.name,
-          title: u.title,
-          role: u.role,
-          month: m,
-          year: y,
-          kpi_score,
-          ai_score,
-          manager_score,
-          total_score: total,
-          rank,
-          billable_hours: billable,
-          court_time: court,
-          client_meetings: meetings
-        };
-      });
-      return res.json({ success: true, data: seeded });
+      return res.json({ success: true, data: [] });
     }
     res.json({ success: true, data: kpis });
   } catch (err) {
@@ -19652,7 +20610,7 @@ router16.post("/kpi/import", auth2, async (req, res) => {
       SELECT p.*, u.name as employee_name, u.title, u.role
       FROM hr_performances p
       JOIN users u ON p.employee_id = CAST(u.id AS TEXT)
-      WHERE p.month = ? AND p.year = ?
+      WHERE p.month = ? AND p.year = ? AND LOWER(COALESCE(u.role, '')) <> 'admin' AND LOWER(COALESCE(u.username, '')) <> 'admin'
     `).all(m, y);
     res.json({ success: true, data: updatedKpis });
   } catch (err) {
@@ -20051,7 +21009,7 @@ router17.get("/devices", auth2, (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-router17.post("/devices", auth2, (req, res) => {
+router17.post("/devices", requireRoles("admin", "director", "controller"), (req, res) => {
   try {
     const { id, name, mac_address, ip_address, location, device_type, api_key } = req.body;
     if (!id || !name) {
@@ -20075,7 +21033,7 @@ router17.post("/devices", auth2, (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-router17.delete("/devices/:id", auth2, (req, res) => {
+router17.delete("/devices/:id", requireRoles("admin", "director", "controller"), (req, res) => {
   try {
     const { id } = req.params;
     database_default.prepare("DELETE FROM iot_devices WHERE id = ?").run(id);
@@ -20178,7 +21136,7 @@ router17.get("/rules", auth2, (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-router17.post("/rules", auth2, (req, res) => {
+router17.post("/rules", requireRoles("admin", "director", "controller"), (req, res) => {
   try {
     const { id, name, triggerDevice, triggerParam, operator, triggerValue, actionDevice, actionCommand, active } = req.body;
     if (!id || !name) {
@@ -20202,7 +21160,7 @@ router17.post("/rules", auth2, (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-router17.post("/rules/:id/toggle", auth2, (req, res) => {
+router17.post("/rules/:id/toggle", requireRoles("admin", "director", "controller"), (req, res) => {
   try {
     const { id } = req.params;
     const rule = database_default.prepare("SELECT active FROM iot_rules WHERE id = ?").get(id);
@@ -20216,7 +21174,7 @@ router17.post("/rules/:id/toggle", auth2, (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-router17.delete("/rules/:id", auth2, (req, res) => {
+router17.delete("/rules/:id", requireRoles("admin", "director", "controller"), (req, res) => {
   try {
     const { id } = req.params;
     database_default.prepare("DELETE FROM iot_rules WHERE id = ?").run(id);
@@ -20233,7 +21191,7 @@ router17.get("/alerts", auth2, (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-router17.post("/alerts/:id/resolve", auth2, (req, res) => {
+router17.post("/alerts/:id/resolve", requireRoles("admin", "director", "controller"), (req, res) => {
   try {
     const { id } = req.params;
     database_default.prepare("UPDATE iot_alerts SET status = 'resolved', severity = 'resolved' WHERE id = ?").run(id);
@@ -20242,7 +21200,7 @@ router17.post("/alerts/:id/resolve", auth2, (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-router17.post("/alerts/:id/mute", auth2, (req, res) => {
+router17.post("/alerts/:id/mute", requireRoles("admin", "director", "controller"), (req, res) => {
   try {
     const { id } = req.params;
     database_default.prepare("UPDATE iot_alerts SET status = 'muted' WHERE id = ?").run(id);
@@ -20251,7 +21209,7 @@ router17.post("/alerts/:id/mute", auth2, (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-router17.post("/devices/:id/action", auth2, (req, res) => {
+router17.post("/devices/:id/action", requireRoles("admin", "director", "controller"), (req, res) => {
   try {
     const { id } = req.params;
     const { action } = req.body;
@@ -20338,7 +21296,7 @@ var iot_routes_default = router17;
 
 // src/modules/api_gateway/gateway.routes.ts
 var import_express18 = require("express");
-var import_crypto = __toESM(require("crypto"), 1);
+var import_crypto2 = __toESM(require("crypto"), 1);
 init_database();
 init_trash_service();
 try {
@@ -20392,20 +21350,21 @@ var setGatewayConfig = (key, value) => {
 };
 var ipRateLimitMap = /* @__PURE__ */ new Map();
 var apiGatewayMiddleware = (req, res, next) => {
-  const requestId = "req_" + import_crypto.default.randomBytes(8).toString("hex");
-  const traceId = req.headers["x-correlation-id"] || "trace_" + import_crypto.default.randomBytes(12).toString("hex");
+  const requestId = "req_" + import_crypto2.default.randomBytes(8).toString("hex");
+  const traceId = req.headers["x-correlation-id"] || "trace_" + import_crypto2.default.randomBytes(12).toString("hex");
   res.setHeader("X-Request-ID", requestId);
   res.setHeader("X-Correlation-ID", traceId);
+  const authenticatedUser = req.user || req.session?.user;
   const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
   const userAgent = req.headers["user-agent"] || "Unknown Client";
-  const testUser = req.headers["x-test-user"] || "Chuy\xEAn vi\xEAn Kh\xE1ch h\xE0ng";
-  const testRole = req.headers["x-test-role"] || "LAWYER";
+  const gatewayUser = authenticatedUser?.name || authenticatedUser?.username || "Authenticated User";
+  const gatewayRole = String(authenticatedUser?.role || "").toUpperCase();
   const isRateLimitEnabled = getGatewayConfig("rate_limiting") === "enabled";
   const customLimitTrigger = req.headers["x-test-rate-limit"] === "trigger";
   if (isRateLimitEnabled) {
     const now = Date.now();
     const windowMs = 60 * 1e3;
-    const limit2 = testRole === "ADMIN" ? 200 : 60;
+    const limit2 = gatewayRole === "ADMIN" ? 200 : 60;
     const clientState = ipRateLimitMap.get(clientIp) || { count: 0, windowStart: now };
     if (now - clientState.windowStart > windowMs) {
       clientState.count = 1;
@@ -20415,7 +21374,7 @@ var apiGatewayMiddleware = (req, res, next) => {
     }
     ipRateLimitMap.set(clientIp, clientState);
     if (clientState.count > limit2 || customLimitTrigger) {
-      logGatewayAudit(testUser, req.originalUrl, "REST", 429, requestId, traceId, clientIp, userAgent, "Rate Limited: Too Many Requests");
+      logGatewayAudit(gatewayUser, req.originalUrl, "REST", 429, requestId, traceId, clientIp, userAgent, "Rate Limited: Too Many Requests");
       return res.status(429).json({
         success: false,
         data: null,
@@ -20429,16 +21388,16 @@ var apiGatewayMiddleware = (req, res, next) => {
     }
   }
   const isRbacEnabled = getGatewayConfig("rbac_checking") === "enabled";
-  if (isRbacEnabled && req.originalUrl.includes("/api/v1/cases") && (req.method === "DELETE" || req.headers["x-test-permission"] === "denied")) {
-    if (testRole !== "ADMIN") {
-      logGatewayAudit(testUser, req.originalUrl, "REST", 403, requestId, traceId, clientIp, userAgent, "Forbidden: Missing CASE.DELETE scope");
+  if (isRbacEnabled && req.originalUrl.includes("/api/v1/cases") && req.method === "DELETE") {
+    if (gatewayRole !== "ADMIN") {
+      logGatewayAudit(gatewayUser, req.originalUrl, "REST", 403, requestId, traceId, clientIp, userAgent, "Forbidden: Missing CASE.DELETE scope");
       return res.status(403).json({
         success: false,
         data: null,
         message: "Quy\u1EC1n truy c\u1EADp b\u1ECB t\u1EEB ch\u1ED1i! T\xE0i kho\u1EA3n kh\xF4ng c\xF3 ph\xE2n quy\u1EC1n th\u1EF1c hi\u1EC7n h\xE0nh \u0111\u1ED9ng n\xE0y (Y\xEAu c\u1EA7u vai tr\xF2 ADMIN).",
         error: {
           code: "ACCESS_DENIED",
-          details: { role: testRole, requiredPermission: "CASE.DELETE" }
+          details: { role: gatewayRole, requiredPermission: "CASE.DELETE" }
         },
         meta: { requestId, traceId, timestamp: (/* @__PURE__ */ new Date()).toISOString() }
       });
@@ -20449,7 +21408,7 @@ var apiGatewayMiddleware = (req, res, next) => {
     try {
       const cached = database_default.prepare("SELECT response_json FROM api_idempotency_keys WHERE key = ?").get(idempotencyKey);
       if (cached) {
-        logGatewayAudit(testUser, req.originalUrl, "REST", 200, requestId, traceId, clientIp, userAgent, "Idempotency Triggered (Duplicate Avoided)");
+        logGatewayAudit(gatewayUser, req.originalUrl, "REST", 200, requestId, traceId, clientIp, userAgent, "Idempotency Triggered (Duplicate Avoided)");
         const parsedResponse = JSON.parse(cached.response_json);
         res.setHeader("X-Cache-Idempotency", "HIT");
         return res.status(200).json(parsedResponse);
@@ -20463,8 +21422,8 @@ var apiGatewayMiddleware = (req, res, next) => {
     traceId,
     clientIp,
     userAgent,
-    user: testUser,
-    role: testRole
+    user: gatewayUser,
+    role: gatewayRole
   };
   next();
 };
@@ -20474,7 +21433,7 @@ var logGatewayAudit = (user, action, protocol, status, requestId, traceId, ip, u
       INSERT INTO api_audit_logs (id, user, action, protocol, status, request_id, trace_id, ip, user_agent, timestamp, details)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      "log_" + import_crypto.default.randomBytes(8).toString("hex"),
+      "log_" + import_crypto2.default.randomBytes(8).toString("hex"),
       user,
       action,
       protocol,
@@ -20500,7 +21459,7 @@ var saveIdempotencyResponse = (key, response) => {
     console.error("Error saving idempotency:", err);
   }
 };
-router18.get("/api/v1/gateway/dashboard", (req, res) => {
+router18.get("/api/v1/gateway/dashboard", requireRoles("admin", "director", "controller"), (req, res) => {
   try {
     const logs = database_default.prepare("SELECT * FROM api_audit_logs ORDER BY timestamp DESC LIMIT 60").all();
     const configs = database_default.prepare("SELECT * FROM api_gateway_config").all();
@@ -20538,7 +21497,7 @@ router18.get("/api/v1/gateway/dashboard", (req, res) => {
     res.status(500).json({ success: false, error: String(err) });
   }
 });
-router18.post("/api/v1/gateway/toggle-rule", (req, res) => {
+router18.post("/api/v1/gateway/toggle-rule", requireRoles("admin", "director"), (req, res) => {
   try {
     const { rule, status } = req.body;
     if (!rule || typeof status !== "boolean") {
@@ -20555,7 +21514,7 @@ router18.post("/api/v1/gateway/toggle-rule", (req, res) => {
     res.status(500).json({ success: false, error: String(err) });
   }
 });
-router18.use("/api/v1", apiGatewayMiddleware);
+router18.use("/api/v1", requireRoles("admin", "director", "controller"), apiGatewayMiddleware);
 router18.get("/api/v1/cases", (req, res) => {
   const ctx = req.gatewayContext;
   try {
@@ -20787,7 +21746,7 @@ router18.get("/api/v1/documents", (req, res) => {
 });
 router18.get("/api/v1/users", (req, res) => {
   try {
-    const users = database_default.prepare("SELECT id, name, username, role FROM users LIMIT 50").all();
+    const users = SharedDirectoryService.listGatewayUsers();
     res.json({
       success: true,
       data: users,
@@ -21075,8 +22034,8 @@ router18.get("/api/v1/sse", (req, res) => {
   const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
   const userAgent = req.headers["user-agent"] || "Unknown";
   const user = req.query.user || "Lu\u1EADt s\u01B0";
-  const requestId = "sse_" + import_crypto.default.randomBytes(8).toString("hex");
-  const traceId = "trace_sse_" + import_crypto.default.randomBytes(8).toString("hex");
+  const requestId = "sse_" + import_crypto2.default.randomBytes(8).toString("hex");
+  const traceId = "trace_sse_" + import_crypto2.default.randomBytes(8).toString("hex");
   logGatewayAudit(user, "GET /api/v1/sse (Open Stream)", "SSE", 200, requestId, traceId, clientIp, userAgent, "Opened Server-Sent Events stream channel");
   res.write(`data: ${JSON.stringify({ event: "CONNECTED", message: "K\u1EBFt n\u1ED1i th\xE0nh c\xF4ng t\u1EDBi c\u1ED5ng d\xF2ng s\u1EF1 ki\u1EC7n SSE Legal OS" })}
 
@@ -21141,7 +22100,7 @@ router18.post("/api/v1/webhooks/inbound", (req, res) => {
     });
   }
   const webhookSecret = getGatewayConfig("webhook_secret", "legal_os_webhook_hmac_secret");
-  const computedSignature = import_crypto.default.createHmac("sha256", webhookSecret).update(`${timestamp}.${JSON.stringify(payload)}`).digest("hex");
+  const computedSignature = import_crypto2.default.createHmac("sha256", webhookSecret).update(`${timestamp}.${JSON.stringify(payload)}`).digest("hex");
   if (computedSignature !== receivedSignature) {
     logGatewayAudit("System External", "POST /api/v1/webhooks/inbound", "WEBHOOK", 401, ctx.requestId, ctx.traceId, ctx.clientIp, ctx.userAgent, "Invalid signature validation");
     return res.status(401).json({
@@ -21179,7 +22138,7 @@ router18.post("/api/v1/webhooks/register", (req, res) => {
       return res.status(400).json({ success: false, message: "URL and events list are required." });
     }
     const reg = {
-      id: "wh_" + import_crypto.default.randomBytes(4).toString("hex"),
+      id: "wh_" + import_crypto2.default.randomBytes(4).toString("hex"),
       url,
       events
     };
@@ -21210,14 +22169,14 @@ router18.post("/api/v1/webhooks/trigger-test", async (req, res) => {
   };
   const timestamp = Math.floor(Date.now() / 1e3).toString();
   const secret = getGatewayConfig("webhook_secret", "legal_os_webhook_hmac_secret");
-  const signature = import_crypto.default.createHmac("sha256", secret).update(`${timestamp}.${JSON.stringify(payload)}`).digest("hex");
+  const signature = import_crypto2.default.createHmac("sha256", secret).update(`${timestamp}.${JSON.stringify(payload)}`).digest("hex");
   const simulateDelivery = async (attempt) => {
     if (endpointUrl.includes("fail_demo")) {
       return attempt < 3 ? "retry" : "failed";
     }
     return "success";
   };
-  const deliveryId = "dev_" + import_crypto.default.randomBytes(6).toString("hex");
+  const deliveryId = "dev_" + import_crypto2.default.randomBytes(6).toString("hex");
   let status = "success";
   let finalAttempt = 1;
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -21518,6 +22477,8 @@ var telephony_controller_default = router19;
 
 // src/server.ts
 init_trash_service();
+init_firestore_sync();
+init_domainRecordEvents();
 var app2 = (0, import_express20.default)();
 app2.set("trust proxy", 1);
 var httpServer = (0, import_http.createServer)(app2);
@@ -21529,6 +22490,23 @@ var io = new import_socket.Server(httpServer, {
 app2.set("io", io);
 setPaymentSocketServer(io);
 TrashService.setSocketServer(io);
+domainRecordEvents.on("changed", (change) => {
+  io.emit("domain_records_updated", change);
+  if (change.action === "upsert") {
+    io.emit("erp_record_updated", {
+      id: change.id,
+      data: change.data,
+      domain: change.domain,
+      timestamp: change.timestamp
+    });
+  } else {
+    io.emit("erp_record_deleted", {
+      id: change.id,
+      domain: change.domain,
+      timestamp: change.timestamp
+    });
+  }
+});
 var PORT = config.PORT;
 var systemLogs = [];
 var addSecurityLog = (ip, url, reason, resolution) => {
@@ -21615,8 +22593,7 @@ app2.use(import_express20.default.urlencoded({ limit: "50mb", extended: true }))
 var apiLimiter = (0, import_express_rate_limit2.default)({
   windowMs: 15 * 60 * 1e3,
   // 15 minutes
-  max: 1e3,
-  // Maximum 1000 requests per IP in 15 minutes
+  max: Number.parseInt(process.env.API_RATE_LIMIT_MAX || "5000", 10),
   standardHeaders: true,
   legacyHeaders: false,
   handler: (req, res) => {
@@ -21637,7 +22614,7 @@ var paymentLimiter = (0, import_express_rate_limit2.default)({
 app2.use("/api/payment", paymentLimiter);
 app2.use("/api", apiLimiter);
 var SqliteStore = (0, import_better_sqlite3_session_store.default)(import_express_session.default);
-app2.use("/api", (0, import_express_session.default)({
+var sessionMiddleware = (0, import_express_session.default)({
   store: new SqliteStore({
     client: database_default,
     expired: {
@@ -21654,7 +22631,9 @@ app2.use("/api", (0, import_express_session.default)({
     sameSite: "none",
     secure: true
   }
-}));
+});
+app2.use("/api", sessionMiddleware);
+io.engine.use(sessionMiddleware);
 app2.get("/healthz", (req, res) => res.status(200).send("OK"));
 app2.get("/health", (req, res) => {
   res.status(200).json({
@@ -21746,13 +22725,38 @@ app2.use("/uploads", import_express20.default.static(uploadPath, {
   }
 }));
 io.on("connection", (socket) => {
+  const getSocketUser = () => socket.request.session?.user || null;
+  const requireSocketUser = () => {
+    const user = getSocketUser();
+    if (!user) {
+      socket.emit("socket_authorization_error", { message: "Y\xEAu c\u1EA7u \u0111\u0103ng nh\u1EADp \u0111\u1EC3 th\u1EF1c hi\u1EC7n thao t\xE1c n\xE0y." });
+      return null;
+    }
+    return user;
+  };
+  const requireInternalSocketUser = () => {
+    const user = requireSocketUser();
+    if (user && String(user.role || "").toLowerCase() === "client") {
+      socket.emit("socket_authorization_error", { message: "Thao t\xE1c n\xE0y ch\u1EC9 d\xE0nh cho nh\xE2n s\u1EF1 n\u1ED9i b\u1ED9." });
+      return null;
+    }
+    return user;
+  };
   socket.on("join_visitor", (visitorId) => {
+    const user = getSocketUser();
+    if (user && String(user.role || "").toLowerCase() === "client") {
+      const allowedIds = [String(user.username || ""), `client_${user.id}`];
+      if (!allowedIds.includes(String(visitorId))) return;
+    }
     socket.join(`visitor_${visitorId}`);
   });
   socket.on("join_admin", () => {
+    if (!requireInternalSocketUser()) return;
     socket.join("admins");
   });
   socket.on("send_message", (data) => {
+    const user = data.senderType === "admin" ? requireInternalSocketUser() : getSocketUser();
+    if (data.senderType === "admin" && !user) return;
     const created_at = (/* @__PURE__ */ new Date()).toISOString();
     try {
       database_default.prepare("INSERT INTO live_messages (visitor_id, sender_type, content, file_url, file_name, created_at, is_read) VALUES (?, ?, ?, ?, ?, ?, ?)").run(data.visitorId, data.senderType, data.content, data.fileUrl || null, data.fileName || null, created_at, data.senderType === "admin" ? 1 : 0);
@@ -21769,6 +22773,7 @@ io.on("connection", (socket) => {
     }
   });
   socket.on("mark_read", (visitorId) => {
+    if (!requireInternalSocketUser()) return;
     try {
       database_default.prepare("UPDATE live_messages SET is_read = 1 WHERE visitor_id = ? AND sender_type = 'visitor'").run(visitorId);
       io.to("admins").emit("messages_read", { visitorId });
@@ -21776,20 +22781,27 @@ io.on("connection", (socket) => {
     }
   });
   socket.on("join_erp", () => {
+    if (!requireInternalSocketUser()) return;
     socket.join("erp_users");
   });
   socket.on("join_record", (recordId) => {
+    const user = requireSocketUser();
+    if (!user || !checkResourceAccess(user, "record", String(recordId))) return;
     socket.join(`record_${recordId}`);
   });
   socket.on("send_internal_message", (data) => {
+    const user = requireSocketUser();
+    if (!user || !checkResourceAccess(user, "record", String(data.recordId))) return;
+    const senderName = user.name || user.username || "Unknown";
+    const senderRole = user.role || "staff";
     const created_at = (/* @__PURE__ */ new Date()).toISOString();
     try {
-      const info = database_default.prepare("INSERT INTO record_messages (record_id, sender_name, sender_role, content, file_url, file_name, created_at, is_read) VALUES (?, ?, ?, ?, ?, ?, ?, 0)").run(data.recordId, data.senderName, data.senderRole, data.content, data.fileUrl || null, data.fileName || null, created_at);
+      const info = database_default.prepare("INSERT INTO record_messages (record_id, sender_name, sender_role, content, file_url, file_name, created_at, is_read) VALUES (?, ?, ?, ?, ?, ?, ?, 0)").run(data.recordId, senderName, senderRole, data.content, data.fileUrl || null, data.fileName || null, created_at);
       const newMsg = {
         id: info.lastInsertRowid,
         record_id: data.recordId,
-        sender_name: data.senderName,
-        sender_role: data.senderRole,
+        sender_name: senderName,
+        sender_role: senderRole,
         content: data.content,
         file_url: data.fileUrl,
         file_name: data.fileName,
@@ -21803,6 +22815,8 @@ io.on("connection", (socket) => {
     }
   });
   socket.on("mark_internal_messages_read", (data) => {
+    const user = requireSocketUser();
+    if (!user || !checkResourceAccess(user, "record", String(data.recordId))) return;
     try {
       database_default.prepare("UPDATE record_messages SET is_read = 1 WHERE record_id = ?").run(data.recordId);
       io.to("erp_users").emit("internal_messages_read", { recordId: data.recordId });
@@ -21884,30 +22898,14 @@ app2.all("/api/*all", (req, res) => {
   res.status(404).json({ error: "API route not found" });
 });
 async function startServer() {
-  syncFromFirestore().then(() => {
-    runMigration();
-    try {
-      const { startRealTimeSync: startRealTimeSync2 } = (init_firestore_sync(), __toCommonJS(firestore_sync_exports));
-      startRealTimeSync2();
-    } catch (errSync) {
-      console.error("Failed to start server-side real-time sync listeners:", errSync);
-    }
-  }).catch((err) => {
-    console.error("Failed to sync from Firestore on startup:", err);
-    runMigration();
-    try {
-      const { startRealTimeSync: startRealTimeSync2 } = (init_firestore_sync(), __toCommonJS(firestore_sync_exports));
-      startRealTimeSync2();
-    } catch (errSync) {
-      console.error("Failed to start server-side real-time sync listeners after error:", errSync);
-    }
-  });
   if (config.NODE_ENV !== "production") {
     try {
       const { createServer: createViteServer } = await import("vite");
       const vite = await createViteServer({
         server: {
-          middlewareMode: true
+          middlewareMode: true,
+          // Reuse the application's HTTP server for Vite HMR instead of binding a second socket.
+          hmr: { server: httpServer }
         },
         appType: "spa"
       });
@@ -21953,12 +22951,6 @@ async function startServer() {
       console.error("Server error:", e);
     }
   });
-  try {
-    MemoryMonitor_default.initialize();
-  } catch (err) {
-    console.error("CRITICAL ERROR: Failed to initialize MemoryMonitor:", err.message);
-    process.exit(1);
-  }
   const gracefulShutdown = (signal) => {
     console.log(`[Shutdown Service] Received ${signal}. Starting graceful termination...`);
     try {
@@ -21980,6 +22972,42 @@ async function startServer() {
   process.on("SIGINT", () => gracefulShutdown("SIGINT"));
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`LAW FIRM ERP AI RUNNING ON HTTP://LOCALHOST:${PORT}`);
+    syncFromFirestore().then(() => {
+      runMigration();
+      TrashService.cleanupExpired(30).catch((err) => console.error("Initial trash cleanup failed:", err));
+      setInterval(() => {
+        TrashService.cleanupExpired(30).catch((err) => console.error("Scheduled trash cleanup failed:", err));
+      }, 60 * 60 * 1e3);
+      setInterval(() => {
+        retryFirestoreSync().catch((err) => console.error("Scheduled Firestore retry failed:", err));
+      }, 5 * 60 * 1e3);
+      try {
+        startRealTimeSync();
+      } catch (errSync) {
+        console.error("Failed to start server-side real-time sync listeners:", errSync);
+      }
+    }).catch((err) => {
+      console.error("Failed to sync from Firestore on startup:", err);
+      runMigration();
+      TrashService.cleanupExpired(30).catch((cleanupErr) => console.error("Initial trash cleanup failed:", cleanupErr));
+      setInterval(() => {
+        TrashService.cleanupExpired(30).catch((cleanupErr) => console.error("Scheduled trash cleanup failed:", cleanupErr));
+      }, 60 * 60 * 1e3);
+      setInterval(() => {
+        retryFirestoreSync().catch((retryErr) => console.error("Scheduled Firestore retry failed:", retryErr));
+      }, 5 * 60 * 1e3);
+      try {
+        startRealTimeSync();
+      } catch (errSync) {
+        console.error("Failed to start server-side real-time sync listeners after error:", errSync);
+      }
+    });
+    try {
+      MemoryMonitor_default.initialize();
+    } catch (err) {
+      console.error("CRITICAL ERROR: Failed to initialize MemoryMonitor:", err.message);
+      process.exit(1);
+    }
   });
 }
 startServer();

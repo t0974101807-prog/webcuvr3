@@ -2,7 +2,6 @@ import React from "react";
 import { X, Calendar } from "lucide-react";
 import { Timeline, TimelineEvent } from "../../../components/shared/Timeline";
 import { RecordItem } from "../repository/SpecializedRecordsRepository";
-import { SpecializedRecordsService } from "../services/SpecializedRecordsService";
 
 interface ModuleTimelineProps {
   record: RecordItem | null;
@@ -17,7 +16,13 @@ export const ModuleTimeline: React.FC<ModuleTimelineProps> = ({
 }) => {
   if (!record) return null;
 
-  const events: TimelineEvent[] = SpecializedRecordsService.getMockTimelineEvents(record);
+  const events: TimelineEvent[] = Array.isArray((record as any).timeline)
+    ? (record as any).timeline
+    : Array.isArray((record as any).events)
+      ? (record as any).events
+      : Array.isArray((record as any).auditLogs)
+        ? (record as any).auditLogs
+        : [];
 
   return (
     <div className="fixed inset-y-0 right-0 w-full max-w-md bg-white dark:bg-slate-900 shadow-2xl z-[90] flex flex-col border-l border-slate-100 dark:border-slate-800 animate-in slide-in-from-right duration-300">

@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import Markdown from "react-markdown";
 import * as XLSX from "xlsx";
+import { fetchApi } from "../utils/api";
 
 const SYSTEM_TITLES = [
   'Giám đốc',
@@ -347,7 +348,7 @@ export default function HrDashboard({
           return;
         }
 
-        const res = await fetch("/api/hr/payroll/import", {
+        const res = await fetchApi("/api/hr/payroll/import", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ payrolls: importedPayrolls, month: hrMonth, year: hrYear })
@@ -520,7 +521,7 @@ export default function HrDashboard({
           return;
         }
 
-        const res = await fetch("/api/hr/kpi/import", {
+        const res = await fetchApi("/api/hr/kpi/import", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ kpis: importedKpis, month: hrMonth, year: hrYear })
@@ -551,22 +552,22 @@ export default function HrDashboard({
       const [
         dashRes, empRes, deptRes, posRes, shiftRes, attRes, leaveRes, tripRes, otRes, payRes, kpiRes, contractRes, eqRes, trainRes, recRes, orgRes
       ] = await Promise.all([
-        fetch("/api/hr/dashboard").then(r => r.json()).catch(() => null),
-        fetch("/api/hr/employees").then(r => r.json()).catch(() => null),
-        fetch("/api/hr/departments").then(r => r.json()).catch(() => null),
-        fetch("/api/hr/positions").then(r => r.json()).catch(() => null),
-        fetch("/api/hr/shifts").then(r => r.json()).catch(() => null),
-        fetch("/api/hr/attendance").then(r => r.json()).catch(() => null),
-        fetch("/api/hr/leave").then(r => r.json()).catch(() => null),
-        fetch("/api/hr/business-trip").then(r => r.json()).catch(() => null),
-        fetch("/api/hr/overtime").then(r => r.json()).catch(() => null),
-        fetch(`/api/hr/payroll?month=${hrMonth}&year=${hrYear}`).then(r => r.json()).catch(() => null),
-        fetch(`/api/hr/kpi?month=${hrMonth}&year=${hrYear}`).then(r => r.json()).catch(() => null),
-        fetch("/api/hr/contracts").then(r => r.json()).catch(() => null),
-        fetch("/api/hr/equipment").then(r => r.json()).catch(() => null),
-        fetch("/api/hr/training").then(r => r.json()).catch(() => null),
-        fetch("/api/hr/recruitment").then(r => r.json()).catch(() => null),
-        fetch("/api/hr/org-chart").then(r => r.json()).catch(() => null)
+        fetchApi("/api/hr/dashboard").then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/employees").then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/departments").then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/positions").then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/shifts").then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/attendance").then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/leave").then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/business-trip").then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/overtime").then(r => r.json()).catch(() => null),
+        fetchApi(`/api/hr/payroll?month=${hrMonth}&year=${hrYear}`).then(r => r.json()).catch(() => null),
+        fetchApi(`/api/hr/kpi?month=${hrMonth}&year=${hrYear}`).then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/contracts").then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/equipment").then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/training").then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/recruitment").then(r => r.json()).catch(() => null),
+        fetchApi("/api/hr/org-chart").then(r => r.json()).catch(() => null)
       ]);
 
       if (dashRes?.success) setDashboardData(dashRes.data);
@@ -645,7 +646,7 @@ export default function HrDashboard({
     }
     setIsSimulating(true);
     try {
-      const res = await fetch("/api/hr/attendance/check-in-out", {
+      const res = await fetchApi("/api/hr/attendance/check-in-out", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -680,7 +681,7 @@ export default function HrDashboard({
     setChatHistory(updatedHistory);
 
     try {
-      const res = await fetch("/api/hr/ai-assistant", {
+      const res = await fetchApi("/api/hr/ai-assistant", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: query })
@@ -702,7 +703,7 @@ export default function HrDashboard({
   const submitLeaveRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch("/api/hr/leave", {
+      const res = await fetchApi("/api/hr/leave", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newLeaveForm)
@@ -722,7 +723,7 @@ export default function HrDashboard({
   const submitOtRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch("/api/hr/overtime", {
+      const res = await fetchApi("/api/hr/overtime", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newOtForm)
@@ -741,7 +742,7 @@ export default function HrDashboard({
 
   const approveLeaveRequest = async (id: number, status: string) => {
     try {
-      const res = await fetch(`/api/hr/leave/${id}/approve`, {
+      const res = await fetchApi(`/api/hr/leave/${id}/approve`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status })
@@ -1398,24 +1399,27 @@ export default function HrDashboard({
                       <td className={`py-2 px-3 font-bold ${textTitle}`}>{u.name}</td>
                       <td className="py-2 px-3 text-slate-400 text-[10px] truncate max-w-[120px]">{u.department}</td>
                       {Array.from({ length: 15 }, (_, i) => {
-                        // random attendance state for mock feel but realistic
                         const day = i + 1;
                         const isWeekend = day % 7 === 1 || day % 7 === 2;
-                        const hasCheckedIn = (idx + day) % 9 !== 0 && !isWeekend;
+                        const attendance = attendanceLogs.find((log: any) => {
+                          const logEmployee = String(log.employee_id || log.staff_code || "");
+                          const logDay = Number(String(log.date || "").split("-").pop());
+                          return logEmployee === String(u.id) || logEmployee === String(u.staff_code) ? logDay === day : false;
+                        });
                         return (
                           <td key={i} className="py-2 px-1 text-center font-mono">
                             {isWeekend ? (
                               <span className="text-slate-600 font-black">-</span>
-                            ) : hasCheckedIn ? (
+                            ) : attendance ? (
                               <span className="text-emerald-400 font-black">✔</span>
                             ) : (
-                              <span className="text-rose-500 font-black">✘</span>
+                              <span className="text-slate-500 font-black">--</span>
                             )}
                           </td>
                         );
                       })}
-                      <td className="py-2 px-2 text-center font-bold text-indigo-400 font-mono">{(idx % 3 === 0) ? "11.5" : "12.0"}</td>
-                      <td className="py-2 px-2 text-center font-bold text-amber-400 font-mono">{(idx * 2) % 4}</td>
+                      <td className="py-2 px-2 text-center font-bold text-indigo-400 font-mono">{attendanceLogs.filter((log: any) => String(log.employee_id || log.staff_code) === String(u.id) || String(log.employee_id || log.staff_code) === String(u.staff_code)).length || "--"}</td>
+                      <td className="py-2 px-2 text-center font-bold text-amber-400 font-mono">{attendanceLogs.filter((log: any) => (String(log.employee_id || log.staff_code) === String(u.id) || String(log.employee_id || log.staff_code) === String(u.staff_code)) && Number(log.late_minutes || 0) > 0).length || "--"}</td>
                     </tr>
                   );
                 })}
@@ -1751,13 +1755,11 @@ export default function HrDashboard({
 
               <div className="h-[250px] w-full text-xs">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={[
-                    { name: "T.V.Nam", Billable: 145, NonBillable: 35 },
-                    { name: "N.T.Mai", Billable: 130, NonBillable: 42 },
-                    { name: "L.H.Cường", Billable: 160, NonBillable: 20 },
-                    { name: "P.M.Dung", Billable: 95, NonBillable: 60 },
-                    { name: "H.Đ.Anh", Billable: 120, NonBillable: 38 }
-                  ]} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <BarChart data={kpiList.map((item: any) => ({
+                      name: item.employee_name || item.name || item.staff_code || "Không xác định",
+                      Billable: Number(item.billable_hours || 0),
+                      NonBillable: Number(item.non_billable_hours || 0),
+                    }))} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#2a3547" />
                     <XAxis dataKey="name" stroke="#64748b" />
                     <YAxis stroke="#64748b" />
@@ -1778,20 +1780,16 @@ export default function HrDashboard({
               </h3>
 
               <div className="space-y-3 text-xs">
-                {[
-                  { name: "Trần Văn Nam", cases: 14, win_rate: "92%", hours: "180h" },
-                  { name: "Nguyễn Thị Mai", cases: 10, win_rate: "88%", hours: "172h" },
-                  { name: "Lê Hoàng Cường", cases: 18, win_rate: "85%", hours: "180h" },
-                  { name: "Hoàng Đức Anh", cases: 8, win_rate: "100%", hours: "158h" }
-                ].map((row, i) => (
+                {kpiList.filter((item: any) => Number(item.court_time || 0) > 0).map((row: any, i) => (
                   <div key={i} className={`p-3 rounded-xl border ${innerBoxBg} flex items-center justify-between`}>
                     <div>
-                      <strong className={textLabel}>{row.name}</strong>
-                      <p className="text-[10px] text-slate-500">Tỷ lệ thắng án: <strong className="text-emerald-400">{row.win_rate}</strong> • Tổng thời gian: {row.hours}</p>
+                      <strong className={textLabel}>{row.employee_name || row.name || row.staff_code}</strong>
+                      <p className="text-[10px] text-slate-500">Dữ liệu KPI thực tế từ hệ thống</p>
                     </div>
-                    <span className="px-2.5 py-1 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-black font-mono leading-none">{row.cases} Phiên</span>
+                    <span className="px-2.5 py-1 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-black font-mono leading-none">{row.court_time} Phiên</span>
                   </div>
                 ))}
+                {kpiList.filter((item: any) => Number(item.court_time || 0) > 0).length === 0 && <p className="py-8 text-center text-xs text-slate-500">Chưa có dữ liệu phiên tòa trong hệ thống.</p>}
               </div>
             </div>
 

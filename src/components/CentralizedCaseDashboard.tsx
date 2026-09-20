@@ -28,6 +28,7 @@ import {
   Minimize2
 } from "lucide-react";
 import { useFullscreen } from "../hooks/useFullscreen";
+import { filterNonAdminPersonnel } from "../utils/personnelFilters";
 
 export interface ProcessedRecord {
   id: string;
@@ -1068,7 +1069,7 @@ export const CentralizedCaseDashboard: React.FC<CentralizedCaseDashboardProps> =
               >
                 <option value="">-- Chọn luật sư tiếp nhận --</option>
                 {users && users.length > 0 ? (
-                  users.filter((u: any) => u.role !== 'admin' && u.username !== 'admin').map((u: any) => (
+                  filterNonAdminPersonnel(users).map((u: any) => (
                     <option key={u.id || u.name} value={u.name}>
                       {u.name} - {u.role || "Luật sư chính"} ({u.branch || "Hà Nội"})
                     </option>

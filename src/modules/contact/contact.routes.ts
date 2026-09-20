@@ -1,14 +1,138 @@
 import express from "express";
 import db from "../../db/database";
-import { auth } from "../../middleware/auth";
+import { auth, requireRoles } from "../../middleware/auth";
 import { syncToFirestore, syncRowToFirestore, deleteFromFirestore } from "../../db/firestore-sync";
 import TrashService from "../../services/trash.service";
 
 import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
+import { SystemDataAccess } from "../../system/data-access/SystemDataAccess";
 
 const router = express.Router();
+
+router.get("/appointments", auth, (req: any, res: any) => {
+  try {
+    const user = req.user || req.session?.user;
+    const accountType = String(user?.account_type || user?.accountType || "").toUpperCase();
+    const isClient = accountType === "CUSTOMER" || ["client", "customer"].includes(String(user?.role || "").toLowerCase());
+    let query = `
+      SELECT id, client_name as clientName, phone, category,
+             date_time as dateTime, assigned_staff as assignedStaff,
+             type, notes, status, created_at as createdAt
+      FROM appointments`;
+    const params: string[] = [];
+    if (isClient) {
+      query += " WHERE client_name = ? OR phone = ?";
+      params.push(user?.name || "", user?.phone || "");
+    }
+    query += " ORDER BY id DESC";
+    const rows = db.prepare(query).all(...params);
+    res.json(rows);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to load appointments" });
+  }
+});
+
+router.post("/appointments", auth, (req: any, res: any) => {
+  try {
+    const user = req.user || req.session?.user;
+    const payload = req.body || {};
+    const accountType = String(user?.account_type || user?.accountType || "").toUpperCase();
+    const isClient = accountType === "CUSTOMER" || ["client", "customer"].includes(String(user?.role || "").toLowerCase());
+    if (!payload.dateTime || !payload.category || !payload.type || (isClient && !user?.name)) {
+      return res.status(400).json({ error: "Thiếu thông tin lịch hẹn." });
+    }
+    const id = String(payload.id || `appt-client-${Date.now()}`);
+    const clientName = isClient ? user.name : String(payload.clientName || "");
+    const phone = isClient ? user.phone || "" : String(payload.phone || "");
+    if (!clientName || !phone) return res.status(400).json({ error: "Thiếu thông tin khách hàng." });
+    db.prepare(`
+      INSERT INTO appointments (
+        id, client_name, phone, category, date_time, assigned_staff,
+        type, notes, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    `).run(id, clientName, phone, payload.category, payload.dateTime, payload.assignedStaff || "Đang phân công", payload.type, payload.notes || "", new Date().toISOString());
+    res.json({ success: true, id });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to create appointment" });
+  }
+});
+
+router.put("/appointments/:id", requireRoles("admin", "director", "manager", "controller"), (req: any, res: any) => {
+  try {
+    const payload = req.body || {};
+    const allowedFields = ["clientName", "phone", "category", "dateTime", "assignedStaff", "type", "notes", "status"];
+    const updates: string[] = [];
+    const values: any[] = [];
+    const columnMap: Record<string, string> = {
+      clientName: "client_name", dateTime: "date_time", assignedStaff: "assigned_staff",
+      phone: "phone", category: "category", type: "type", notes: "notes", status: "status"
+    };
+    for (const field of allowedFields) {
+      if (payload[field] !== undefined) {
+        updates.push(`${columnMap[field]} = ?`);
+        values.push(payload[field]);
+      }
+    }
+    if (updates.length === 0) return res.status(400).json({ error: "Không có dữ liệu cập nhật." });
+    values.push(req.params.id);
+    db.prepare(`UPDATE appointments SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to update appointment" });
+  }
+});
+
+router.delete("/appointments/:id", requireRoles("admin", "director", "manager", "controller"), (req: any, res: any) => {
+  try {
+    db.prepare("DELETE FROM appointments WHERE id = ?").run(req.params.id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to delete appointment" });
+  }
+});
+
+router.get("/portal-activities", requireRoles("admin", "director", "manager", "controller"), (req: any, res: any) => {
+  try {
+    const rows = db.prepare(`
+      SELECT id, type, client_id as clientId, client_name as clientName,
+             document_title as documentTitle, response_time_minutes as responseTimeMinutes,
+             timestamp
+      FROM portal_activities
+      ORDER BY timestamp DESC
+      LIMIT 100
+    `).all();
+    res.json(rows);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to load portal activities" });
+  }
+});
+
+router.post("/portal-activities", requireRoles("admin", "director", "manager", "controller"), (req: any, res: any) => {
+  try {
+    const payload = req.body || {};
+    if (!payload.type || !payload.clientName) {
+      return res.status(400).json({ error: "Thiếu thông tin hoạt động cổng khách hàng." });
+    }
+    const id = String(payload.id || `portal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    db.prepare(`
+      INSERT INTO portal_activities (id, type, client_id, client_name, document_title, response_time_minutes, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      payload.type,
+      payload.clientId || null,
+      payload.clientName,
+      payload.documentTitle || null,
+      payload.responseTimeMinutes === undefined ? null : Number(payload.responseTimeMinutes),
+      payload.timestamp || new Date().toISOString()
+    );
+    res.json({ success: true, id });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to create portal activity" });
+  }
+});
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -40,7 +164,7 @@ const upload = multer({
 });
 
 // Get all threads for admin
-router.get("/live-threads", auth, (req: any, res: any) => {
+router.get("/live-threads", requireRoles("admin", "director", "manager", "controller"), (req: any, res: any) => {
   try {
     const threads = db.prepare(`
       SELECT visitor_id, MAX(created_at) as last_message_time, SUM(CASE WHEN is_read=0 AND sender_type='visitor' THEN 1 ELSE 0 END) as unread_count 
@@ -61,9 +185,18 @@ router.get("/live-threads", auth, (req: any, res: any) => {
   }
 });
 
-// Get messages for a specific visitor
-router.get("/live-messages/:visitorId", (req: any, res: any) => {
+// Get messages for a specific authenticated portal visitor
+router.get("/live-messages/:visitorId", auth, (req: any, res: any) => {
   try {
+    const user = req.user || req.session?.user;
+    const visitorId = String(req.params.visitorId || "");
+    const isClient = String(user?.role || "").toLowerCase() === "client";
+    const allowedVisitorIds = [String(user?.username || ""), `client_${user?.id}`];
+
+    if (isClient && !allowedVisitorIds.includes(visitorId)) {
+      return res.status(403).json({ error: "Bạn không có quyền xem cuộc trò chuyện này." });
+    }
+
     const msgs = db.prepare('SELECT * FROM live_messages WHERE visitor_id = ? ORDER BY created_at ASC').all(req.params.visitorId);
     res.json(msgs);
   } catch(e: any) {
@@ -72,7 +205,7 @@ router.get("/live-messages/:visitorId", (req: any, res: any) => {
 });
 
 // Upload file for chat & CMS
-router.post("/live-upload", upload.single('file'), (req: any, res: any) => {
+router.post("/live-upload", auth, upload.single('file'), (req: any, res: any) => {
   if (!req.file) {
     return res.status(400).json({ error: "No file uploaded" });
   }
@@ -81,6 +214,21 @@ router.post("/live-upload", upload.single('file'), (req: any, res: any) => {
   res.json({ 
     url: fileUrl, 
     fileUrl: fileUrl, 
+    name: req.file.originalname,
+    fileName: req.file.originalname
+  });
+});
+
+// Authenticated uploads for portal, internal chat, CMS, and document workflows.
+router.post("/secure-upload", auth, upload.single('file'), (req: any, res: any) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded" });
+  }
+
+  const fileUrl = `/uploads/${req.file.filename}`;
+  res.json({
+    url: fileUrl,
+    fileUrl,
     name: req.file.originalname,
     fileName: req.file.originalname
   });
@@ -133,7 +281,7 @@ router.post("/messages", (req: any, res: any) => {
   }
 });
 
-router.get("/messages", auth, (req: any, res: any) => {
+router.get("/messages", requireRoles("admin", "director", "manager", "controller"), (req: any, res: any) => {
   try {
     const messages = db.prepare('SELECT * FROM messages ORDER BY created_at DESC').all();
     res.json(messages);
@@ -142,7 +290,7 @@ router.get("/messages", auth, (req: any, res: any) => {
   }
 });
 
-router.put("/messages/:id", auth, (req: any, res: any) => {
+router.put("/messages/:id", requireRoles("admin", "director", "manager", "controller"), (req: any, res: any) => {
   const { is_read, reply_notes } = req.body;
   try {
     if (reply_notes !== undefined) {
@@ -160,24 +308,6 @@ router.get("/stats", auth, (req: any, res: any) => {
   try {
     let stats = db.prepare('SELECT * FROM visitor_stats ORDER BY date ASC').all() as any[];
     
-    // Auto-seed last 30 days if empty or sparse so the chart is fully populated
-    if (!stats || stats.length < 10) {
-      for (let i = 29; i >= 0; i--) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split('T')[0];
-        try {
-          db.prepare('INSERT OR IGNORE INTO visitor_stats (date, visitors, page_views, chats) VALUES (?, ?, ?, ?)').run(
-            dateStr, 
-            Math.floor(Math.random() * 45) + 20, 
-            Math.floor(Math.random() * 150) + 60,
-            Math.floor(Math.random() * 12) + 2
-          );
-        } catch (e) {}
-      }
-      stats = db.prepare('SELECT * FROM visitor_stats ORDER BY date ASC').all() as any[];
-    }
-    
     // Message stats
     const totalMessages = db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number };
     const unreadMessages = db.prepare('SELECT COUNT(*) as count FROM messages WHERE is_read = 0').get() as { count: number };
@@ -185,10 +315,7 @@ router.get("/stats", auth, (req: any, res: any) => {
     // Legal services performance metrics from erp_records
     let records: any[] = [];
     try {
-      const rows = db.prepare('SELECT data FROM erp_records').all() as { data: string }[];
-      records = rows.map(r => {
-        try { return JSON.parse(r.data); } catch (e) { return null; }
-      }).filter(Boolean);
+      records = SystemDataAccess.getAllRecords();
     } catch (e) {}
 
     const getRecordArea = (r: any) => {
@@ -206,7 +333,7 @@ router.get("/stats", auth, (req: any, res: any) => {
       if (cat.includes("ngoại tố tụng") || cat.includes("đại diện")) return "dai_dien_ngoai_to_tung";
       if (cat.includes("nội bộ") || cat.includes("pháp chế")) return "noi_bo";
       if (cat.includes("trọng tài") || cat.includes("hòa giải") || cat.includes("arbitration")) return "trong_tai_hoa_giai";
-      return "tranh_tung";
+      return "unclassified";
     };
 
     const countTranhTung = records.filter(r => getRecordArea(r) === 'tranh_tung').length;
@@ -214,69 +341,96 @@ router.get("/stats", auth, (req: any, res: any) => {
     const countDaiDien = records.filter(r => getRecordArea(r) === 'dai_dien_ngoai_to_tung').length;
     const countNoiBo = records.filter(r => getRecordArea(r) === 'noi_bo').length;
     const countTrongTai = records.filter(r => getRecordArea(r) === 'trong_tai_hoa_giai').length;
+    const countUnclassified = records.filter(r => getRecordArea(r) === 'unclassified').length;
 
     const sumRevenue = (area: string) => {
       return records
         .filter(r => getRecordArea(r) === area)
-        .reduce((sum, r) => sum + (typeof r.feeAmount === 'number' ? r.feeAmount : (parseInt(r.fee) || 120000000)), 0);
+        .reduce((sum, r) => {
+          const rawValue = r.feeAmount ?? r.fee ?? 0;
+          const value = typeof rawValue === 'number' ? rawValue : Number(String(rawValue).replace(/[^0-9.-]/g, ''));
+          return sum + (Number.isFinite(value) ? value : 0);
+        }, 0);
     };
 
-    let legalServicesPerformance = [
+    const legalServicesPerformance = [
       { 
         name: 'Tranh tụng & Dân sự', 
-        casesCount: countTranhTung || 35, 
-        revenue: sumRevenue('tranh_tung') || 1200000000, 
-        conversionRate: 85, 
-        satisfaction: 98, 
-        activeConsultations: Math.max(2, Math.floor((countTranhTung || 35) * 0.4)), 
+        casesCount: countTranhTung,
+        revenue: sumRevenue('tranh_tung'),
+        conversionRate: 0,
+        satisfaction: 0,
+        activeConsultations: records.filter(r => getRecordArea(r) === 'tranh_tung' && !['hoàn thành', 'completed', 'đóng hồ sơ'].includes(String(r.status || '').toLowerCase())).length,
         color: '#a855f7' 
       },
       { 
         name: 'Tư vấn Pháp luật', 
-        casesCount: countTuVan || 42, 
-        revenue: sumRevenue('tu_van') || 850000000, 
-        conversionRate: 90, 
-        satisfaction: 97, 
-        activeConsultations: Math.max(3, Math.floor((countTuVan || 42) * 0.35)), 
+        casesCount: countTuVan,
+        revenue: sumRevenue('tu_van'),
+        conversionRate: 0,
+        satisfaction: 0,
+        activeConsultations: records.filter(r => getRecordArea(r) === 'tu_van' && !['hoàn thành', 'completed', 'đóng hồ sơ'].includes(String(r.status || '').toLowerCase())).length,
         color: '#3b82f6' 
       },
       { 
         name: 'Đại diện Ngoài tố tụng', 
-        casesCount: countDaiDien || 28, 
-        revenue: sumRevenue('dai_dien_ngoai_to_tung') || 620000000, 
-        conversionRate: 88, 
-        satisfaction: 95, 
-        activeConsultations: Math.max(2, Math.floor((countDaiDien || 28) * 0.3)), 
+        casesCount: countDaiDien,
+        revenue: sumRevenue('dai_dien_ngoai_to_tung'),
+        conversionRate: 0,
+        satisfaction: 0,
+        activeConsultations: records.filter(r => getRecordArea(r) === 'dai_dien_ngoai_to_tung' && !['hoàn thành', 'completed', 'đóng hồ sơ'].includes(String(r.status || '').toLowerCase())).length,
         color: '#06b6d4' 
       },
       { 
         name: 'Pháp chế & Nội bộ', 
-        casesCount: countNoiBo || 54, 
-        revenue: sumRevenue('noi_bo') || 490000000, 
-        conversionRate: 94, 
-        satisfaction: 99, 
-        activeConsultations: Math.max(4, Math.floor((countNoiBo || 54) * 0.3)), 
+        casesCount: countNoiBo,
+        revenue: sumRevenue('noi_bo'),
+        conversionRate: 0,
+        satisfaction: 0,
+        activeConsultations: records.filter(r => getRecordArea(r) === 'noi_bo' && !['hoàn thành', 'completed', 'đóng hồ sơ'].includes(String(r.status || '').toLowerCase())).length,
         color: '#10b981' 
       },
       { 
         name: 'Trọng tài & Hòa giải', 
-        casesCount: countTrongTai || 22, 
-        revenue: sumRevenue('trong_tai_hoa_giai') || 380000000, 
-        conversionRate: 86, 
-        satisfaction: 96, 
-        activeConsultations: Math.max(2, Math.floor((countTrongTai || 22) * 0.3)), 
+        casesCount: countTrongTai,
+        revenue: sumRevenue('trong_tai_hoa_giai'),
+        conversionRate: 0,
+        satisfaction: 0,
+        activeConsultations: records.filter(r => getRecordArea(r) === 'trong_tai_hoa_giai' && !['hoàn thành', 'completed', 'đóng hồ sơ'].includes(String(r.status || '').toLowerCase())).length,
         color: '#f59e0b' 
+      },
+      {
+        name: 'Chưa phân loại',
+        casesCount: countUnclassified,
+        revenue: sumRevenue('unclassified'),
+        conversionRate: 0,
+        satisfaction: 0,
+        activeConsultations: records.filter(r => getRecordArea(r) === 'unclassified' && !['hoàn thành', 'completed', 'đóng hồ sơ'].includes(String(r.status || '').toLowerCase())).length,
+        color: '#94a3b8'
       },
     ];
 
-    const monthlyServicesTrend = [
-      { month: 'Tháng 1', 'Tranh tụng & Dân sự': Math.max(4, Math.floor((countTranhTung || 35) * 0.15)), 'Tư vấn Pháp luật': Math.max(5, Math.floor((countTuVan || 42) * 0.15)), 'Đại diện Ngoài tố tụng': 4, 'Pháp chế & Nội bộ': 8, 'Trọng tài & Hòa giải': 3 },
-      { month: 'Tháng 2', 'Tranh tụng & Dân sự': Math.max(6, Math.floor((countTranhTung || 35) * 0.18)), 'Tư vấn Pháp luật': Math.max(7, Math.floor((countTuVan || 42) * 0.18)), 'Đại diện Ngoài tố tụng': 5, 'Pháp chế & Nội bộ': 10, 'Trọng tài & Hòa giải': 4 },
-      { month: 'Tháng 3', 'Tranh tụng & Dân sự': Math.max(8, Math.floor((countTranhTung || 35) * 0.22)), 'Tư vấn Pháp luật': Math.max(9, Math.floor((countTuVan || 42) * 0.22)), 'Đại diện Ngoài tố tụng': 7, 'Pháp chế & Nội bộ': 12, 'Trọng tài & Hòa giải': 5 },
-      { month: 'Tháng 4', 'Tranh tụng & Dân sự': Math.max(10, Math.floor((countTranhTung || 35) * 0.25)), 'Tư vấn Pháp luật': Math.max(12, Math.floor((countTuVan || 42) * 0.25)), 'Đại diện Ngoài tố tụng': 8, 'Pháp chế & Nội bộ': 15, 'Trọng tài & Hòa giải': 6 },
-      { month: 'Tháng 5', 'Tranh tụng & Dân sự': Math.max(12, Math.floor((countTranhTung || 35) * 0.28)), 'Tư vấn Pháp luật': Math.max(15, Math.floor((countTuVan || 42) * 0.28)), 'Đại diện Ngoài tố tụng': 10, 'Pháp chế & Nội bộ': 18, 'Trọng tài & Hòa giải': 8 },
-      { month: 'Tháng 6', 'Tranh tụng & Dân sự': countTranhTung || 35, 'Tư vấn Pháp luật': countTuVan || 42, 'Đại diện Ngoài tố tụng': countDaiDien || 28, 'Pháp chế & Nội bộ': countNoiBo || 54, 'Trọng tài & Hòa giải': countTrongTai || 22 },
-    ];
+    const areaLabels: Record<string, string> = {
+      tranh_tung: 'Tranh tụng & Dân sự',
+      tu_van: 'Tư vấn Pháp luật',
+      dai_dien_ngoai_to_tung: 'Đại diện Ngoài tố tụng',
+      noi_bo: 'Pháp chế & Nội bộ',
+      trong_tai_hoa_giai: 'Trọng tài & Hòa giải',
+      unclassified: 'Chưa phân loại'
+    };
+    const now = new Date();
+    const monthlyServicesTrend = Array.from({ length: 6 }, (_, index) => {
+      const monthDate = new Date(now.getFullYear(), now.getMonth() - (5 - index), 1);
+      const monthKey = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
+      const row: Record<string, string | number> = { month: `Tháng ${monthDate.getMonth() + 1}/${monthDate.getFullYear()}` };
+      for (const area of Object.keys(areaLabels)) {
+        row[areaLabels[area]] = records.filter(record => {
+          const date = String(record.created_at || record.date || record.receiveDate || '').slice(0, 7);
+          return date === monthKey && getRecordArea(record) === area;
+        }).length;
+      }
+      return row;
+    });
 
     res.json({
       chartData: stats,
@@ -295,24 +449,10 @@ router.get("/stats", auth, (req: any, res: any) => {
   }
 });
 
-// Seed data route to make the chart look nice right away when accessed or just run it via script
-router.post("/stats/seed", auth, (req: any, res: any) => {
-    // Generate last 20 days of data
-    for(let i=20; i>=0; i--) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split('T')[0];
-        
-        try {
-            db.prepare('INSERT OR IGNORE INTO visitor_stats (date, visitors, page_views, chats) VALUES (?, ?, ?, ?)').run(
-                dateStr, 
-                Math.floor(Math.random() * 20), 
-                Math.floor(Math.random() * 50) + 10,
-                Math.floor(Math.random() * 5)
-            );
-        } catch(e) {}
-    }
-    res.json({ success: true });
+// Dashboard statistics are write-only from real visitor, page-view, and chat events.
+// Synthetic seed data is intentionally unavailable in production and development.
+router.post("/stats/seed", auth, (_req: any, res: any) => {
+  res.status(410).json({ success: false, error: "Synthetic dashboard data is disabled" });
 });
 
 // Get all contact settings (Public)

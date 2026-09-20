@@ -1,4 +1,4 @@
-import { RecordItem } from "../SpecializedRecords/repository/SpecializedRecordsRepository";
+import type { RecordItem } from "../../domain/shared";
 
 export interface ConsultationCase extends RecordItem {
   consultationType?: string;

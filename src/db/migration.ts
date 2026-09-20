@@ -38,13 +38,20 @@ export function runMigration() {
 
   console.log(`Found ${legacyRows.length} legacy records to migrate.`);
 
-  // Calculate old counts per domain
+  // Calculate old counts per domain and track legacy IDs to validate migration accurately.
   const oldCounts: Record<string, number> = {
     litigation: 0,
     consultation: 0,
     representation: 0,
     compliance: 0,
     arbitration: 0
+  };
+  const oldIdsByDomain: Record<string, Set<string>> = {
+    litigation: new Set(),
+    consultation: new Set(),
+    representation: new Set(),
+    compliance: new Set(),
+    arbitration: new Set()
   };
 
   for (const row of legacyRows) {
@@ -53,6 +60,8 @@ export function runMigration() {
       const domain = mapCategoryToDomain(item.category || item.practice_area);
       if (oldCounts[domain] !== undefined) {
         oldCounts[domain]++;
+        const recordId = String(item.id || item.systemId || row.id || "").trim();
+        if (recordId) oldIdsByDomain[domain].add(recordId);
       }
       // Save to correct domain database
       SystemDataAccess.saveRecord(item);
@@ -63,13 +72,20 @@ export function runMigration() {
 
   console.log("Migration finished. Starting Verification Phase...");
 
-  // Count new records in each domain database
+  // Count new records in each domain database and validate against original legacy IDs.
   const newCounts: Record<string, number> = {
     litigation: LitigationRepository.getAll().length,
     consultation: ConsultationRepository.getAll().length,
     representation: RepresentationRepository.getAll().length,
     compliance: ComplianceRepository.getAll().length,
     arbitration: ArbitrationRepository.getAll().length
+  };
+  const newIdsByDomain: Record<string, Set<string>> = {
+    litigation: new Set(LitigationRepository.getAll().map((item: any) => String(item.id || item.systemId || "").trim()).filter(Boolean)),
+    consultation: new Set(ConsultationRepository.getAll().map((item: any) => String(item.id || item.systemId || "").trim()).filter(Boolean)),
+    representation: new Set(RepresentationRepository.getAll().map((item: any) => String(item.id || item.systemId || "").trim()).filter(Boolean)),
+    compliance: new Set(ComplianceRepository.getAll().map((item: any) => String(item.id || item.systemId || "").trim()).filter(Boolean)),
+    arbitration: new Set(ArbitrationRepository.getAll().map((item: any) => String(item.id || item.systemId || "").trim()).filter(Boolean))
   };
 
   // Verification Report
@@ -81,11 +97,16 @@ export function runMigration() {
   for (const domain of Object.keys(oldCounts)) {
     const oldVal = oldCounts[domain];
     const newVal = newCounts[domain];
-    const mismatch = Math.abs(oldVal - newVal);
+    const legacyIds = oldIdsByDomain[domain];
+    const migratedIds = newIdsByDomain[domain];
+    const matchedLegacy = Array.from(legacyIds).filter((id) => id && migratedIds.has(id)).length;
+    const missingLegacy = Math.max(0, legacyIds.size - matchedLegacy);
+    const mismatch = missingLegacy;
     totalMismatch += mismatch;
     console.log(`${domain.toUpperCase()}:`);
     console.log(`  OLD COUNT: ${oldVal}`);
     console.log(`  NEW COUNT: ${newVal}`);
+    console.log(`  MISSING LEGACY IDS: ${missingLegacy}`);
     console.log(`  MISMATCH : ${mismatch === 0 ? "0 (✓ MATCHED)" : mismatch + " (❌ MISMATCH)"}`);
   }
 

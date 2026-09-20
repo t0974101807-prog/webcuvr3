@@ -24,11 +24,19 @@ const handleLogin = (req: any, res: any) => {
     return res.status(401).json({ success: false, message: "Tên đăng nhập hoặc mật khẩu không đúng" });
   }
 
+  const loginLock = AuthService.getLoginLock(dbUser);
+  if (loginLock.locked) {
+    return res.status(423).json({ success: false, message: `Tài khoản đang tạm khóa. Vui lòng thử lại sau ${loginLock.retryAfterSeconds} giây.` });
+  }
+
   // 2. Verify password with support for auto password migration
   const isValid = AuthService.verifyAndMigratePassword(password, dbUser);
   if (!isValid) {
+    AuthService.recordFailedLogin(dbUser);
     return res.status(401).json({ success: false, message: "Tên đăng nhập hoặc mật khẩu không đúng" });
   }
+
+  AuthService.clearFailedLogins(dbUser.id);
 
   // 3. Verify and register device if needed
   const { isNewDevice } = AuthService.handleDeviceVerification(dbUser.id, deviceId, dbUser.known_devices);

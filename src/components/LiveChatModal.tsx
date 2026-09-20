@@ -3,6 +3,7 @@ import { MessageSquare, X, ImageIcon, Video, Paperclip, FileText, Send } from "l
 import { io, Socket } from "socket.io-client";
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { fetchApi } from "../utils/api";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -94,7 +95,7 @@ export default function LiveChatModal({ record, users, onClose, language = "vi" 
     formData.append("file", file);
 
     try {
-      const res = await fetch("/api/live-upload", { method: "POST", body: formData });
+      const res = await fetchApi("/api/secure-upload", { method: "POST", body: formData });
       const data = await res.json();
 
       if (data.url) {

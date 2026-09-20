@@ -7,6 +7,7 @@ import { aiFinancialAssistant } from "./payment.ai";
 import { financialReportEngine } from "./payment.report";
 import { paymentScheduleEngine } from "./payment.schedule";
 import { qrEngine } from "./payment.qr";
+import { SystemDataAccess } from "../../system/data-access/SystemDataAccess";
 import db from "../../db/database";
 
 export class PaymentController {
@@ -22,10 +23,8 @@ export class PaymentController {
       // Check if payment initialized in DB
       let payment = paymentRepository.findPaymentByCaseId(caseId);
       if (!payment) {
-        // Find case in erp_records
-        const erpRow = db.prepare("SELECT data FROM erp_records WHERE id = ?").get(caseId) as any;
-        if (erpRow) {
-          const parsed = JSON.parse(erpRow.data);
+        const parsed = SystemDataAccess.getRecordById(caseId);
+        if (parsed) {
           const caseCode = parsed.contractId || parsed.systemId || caseId;
           const clientName = parsed.client || "Khách hàng";
           const contractVal = Number(parsed.revenue || parsed.feeAmount || 0);
@@ -80,14 +79,17 @@ export class PaymentController {
     try {
       const { transactionId, bankCode, accountNumber, amount, transferContent, transactionTime, signature } = req.body;
 
-      if (!transferContent || !amount) {
-        return res.status(400).json({ success: false, error: "Nội dung chuyển khoản hoặc số tiền không hợp lệ" });
+      if (!transferContent || !amount || !accountNumber || !signature) {
+        return res.status(400).json({ success: false, error: "Thiếu nội dung chuyển khoản, số tiền, tài khoản nhận hoặc chữ ký webhook" });
+      }
+      if (!bankingGateway.isConfigured() || !bankingGateway.verifySignature(req.body, signature)) {
+        return res.status(401).json({ success: false, error: "Webhook ngân hàng chưa được cấu hình hoặc chữ ký không hợp lệ" });
       }
 
       const tx = {
         transactionId: transactionId || `FT${Date.now()}`,
-        bankCode: bankCode || "MB",
-        accountNumber: accountNumber || "0383111222",
+        bankCode: String(bankCode || "").trim(),
+        accountNumber: String(accountNumber).trim(),
         amount: Number(amount),
         transferContent: String(transferContent).trim(),
         transactionTime: transactionTime || new Date().toISOString(),

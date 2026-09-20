@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Edit2, QrCode, User, Briefcase, Activity, FileText, CheckCircle2, X, Copy, ExternalLink, Download, Printer, Settings, RefreshCw } from 'lucide-react';
 import QRCode from 'qrcode';
+import { fetchApi } from '../utils/api';
 
 interface QRProfileManagerProps {
   records: any[];
@@ -19,6 +20,9 @@ export default function QRProfileManager({ records = [], updateRecords, myPermis
     workStatus: ''
   });
   const [qrPreviewData, setQrPreviewData] = useState<{ id: string; name: string; qrUrl: string; url: string } | null>(null);
+  const [litigationRecords, setLitigationRecords] = useState<any[]>(records);
+  const [caseQrTokens, setCaseQrTokens] = useState<Record<string, string>>({});
+  const [loadingRecords, setLoadingRecords] = useState(false);
   const [copied, setCopied] = useState(false);
 
   // QR Style configuration states (persisted in localStorage)
@@ -78,8 +82,50 @@ export default function QRProfileManager({ records = [], updateRecords, myPermis
     }
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadLitigationRecords = async () => {
+      setLoadingRecords(true);
+      try {
+        const response = await fetchApi('/api/erp-records?activeTab=litigation&limit=100');
+        const payload = await response.json();
+        const fetched = Array.isArray(payload) ? payload : payload.data;
+        if (!cancelled && Array.isArray(fetched)) setLitigationRecords(fetched);
+      } catch (error) {
+        console.error('Không thể tải hồ sơ Tranh tụng cho QR:', error);
+        if (!cancelled) setLitigationRecords(records);
+      } finally {
+        if (!cancelled) setLoadingRecords(false);
+      }
+    };
+    loadLitigationRecords();
+    return () => { cancelled = true; };
+  }, [records]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadPaymentTokens = async () => {
+      const entries = await Promise.all(litigationRecords.map(async (record) => {
+        try {
+          const response = await fetchApi(`/api/payment/case/${encodeURIComponent(record.id)}`);
+          const payload = await response.json();
+          const token = payload?.caseQrToken;
+          return token ? [String(record.id), String(token)] as const : null;
+        } catch {
+          return null;
+        }
+      }));
+      if (!cancelled) setCaseQrTokens(Object.fromEntries(entries.filter(Boolean) as Array<readonly [string, string]>));
+    };
+    if (litigationRecords.length) loadPaymentTokens();
+    return () => { cancelled = true; };
+  }, [litigationRecords]);
+
   const generateQRUrl = async (id: string, size: number, margin: number, color: string) => {
-    const url = `${window.location.origin}/qr/${encodeURIComponent(id)}`;
+    const token = caseQrTokens[id];
+    const url = token
+      ? `${window.location.origin}/case-qr/${encodeURIComponent(token)}`
+      : `${window.location.origin}/qr/${encodeURIComponent(id)}`;
     const qrUrl = await QRCode.toDataURL(url, { 
       width: size * 2, // higher resolution for printing/viewing
       margin: margin,
@@ -281,7 +327,7 @@ export default function QRProfileManager({ records = [], updateRecords, myPermis
             <div className="flex items-center gap-3 flex-wrap">
               <h2 className="text-2xl font-bold font-serif text-[var(--color-primary)]">Quản lý Tiến Độ Hồ Sơ</h2>
               <span className="px-2.5 py-1 text-xs font-bold bg-indigo-100 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-400 rounded-full border border-indigo-200 dark:border-indigo-900/30">
-                Tổng số lượng: {records.length} hồ sơ
+                Tổng số lượng: {litigationRecords.length} hồ sơ
               </span>
             </div>
             <p className="text-slate-500 dark:text-slate-400 mt-1">Hệ thống tạo mã QR phục vụ tra cứu tiến độ vụ việc cho khách hàng dựa trên hồ sơ hiện có</p>
@@ -302,10 +348,12 @@ export default function QRProfileManager({ records = [], updateRecords, myPermis
             </tr>
           </thead>
           <tbody>
-            {records.length === 0 && (
+            {loadingRecords ? (
+              <tr><td colSpan={6} className="p-6 text-center text-slate-500 dark:text-slate-400">Đang đồng bộ hồ sơ Tranh tụng...</td></tr>
+            ) : litigationRecords.length === 0 && (
               <tr><td colSpan={6} className="p-6 text-center text-slate-500 dark:text-slate-400">Chưa có hồ sơ nào trong hệ thống.</td></tr>
             )}
-            {records.length > 0 && records.map((p, index) => (
+            {litigationRecords.length > 0 && litigationRecords.map((p, index) => (
               <tr key={p.id} className="border-b border-slate-100 dark:border-slate-850 hover:bg-slate-50 dark:hover:bg-slate-950/45 transition-colors">
                 <td className="p-4 text-slate-500 dark:text-slate-400 font-mono text-sm">{index + 1}</td>
                 <td className="p-4">

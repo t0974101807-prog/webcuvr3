@@ -1,21 +1,84 @@
-import { RecordItem } from "../../modules/SpecializedRecords/repository/SpecializedRecordsRepository";
+import type { RecordItem } from "../../domain/shared";
 import { LitigationRepository } from "../../modules/litigation/repositories/LitigationRepository";
 import { ConsultationRepository } from "../../modules/consultation/repositories/ConsultationRepository";
 import { RepresentationRepository } from "../../modules/representation/repositories/RepresentationRepository";
 import { ComplianceRepository } from "../../modules/compliance/repositories/ComplianceRepository";
 import { ArbitrationRepository } from "../../modules/arbitration/repositories/ArbitrationRepository";
 import db from "../../db/database";
+import { emitDomainRecordChange } from "../../domain/events/domainRecordEvents";
 
 export const DOMAINS = ["litigation", "consultation", "representation", "compliance", "arbitration"];
 
+export function normalizeCategoryText(value: string | undefined): string {
+  return (value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function mapCategoryToDomain(categoryOrArea: string | undefined): string {
-  if (!categoryOrArea) return "litigation";
-  const normalized = categoryOrArea.toLowerCase().replace(/_/g, "-");
-  if (normalized.includes("tranh-tung") || normalized.includes("litigation")) return "litigation";
-  if (normalized.includes("tu-van") || normalized.includes("consultation")) return "consultation";
-  if (normalized.includes("dai-dien") || normalized.includes("representation")) return "representation";
-  if (normalized.includes("phap-che") || normalized.includes("compliance")) return "compliance";
-  if (normalized.includes("trong-tai") || normalized.includes("arbitration")) return "arbitration";
+  const normalized = normalizeCategoryText(categoryOrArea);
+  if (!normalized) return "litigation";
+
+  const domainRules: Record<string, string[]> = {
+    arbitration: [
+      "trong tai",
+      "hoa giai",
+      "arbitration",
+      "mediation",
+      "tranh chap trong tai",
+      "trong tai hoa giai"
+    ],
+    compliance: [
+      "phap che",
+      "compliance",
+      "tuan thu",
+      "tuan thu phap luat",
+      "noi bo",
+      "risk management",
+      "kiem soat rui ro",
+      "phap che noi bo"
+    ],
+    representation: [
+      "dai dien",
+      "dai dien ngoai to tung",
+      "representation",
+      "ngoai to tung",
+      "dai dien khach hang",
+      "ngoai to"
+    ],
+    consultation: [
+      "tu van",
+      "tu van phap ly",
+      "consultation",
+      "counseling",
+      "phap ly",
+      "tu van doanh nghiep",
+      "hoi dong phap ly"
+    ],
+    litigation: [
+      "tranh tung",
+      "litigation",
+      "hinh su",
+      "dan su",
+      "hinh su dan su",
+      "hanh chinh",
+      "khieu nai",
+      "phuc tham",
+      "danh gia",
+      "tranh chap",
+      "cong ty"
+    ]
+  };
+
+  for (const [domain, keywords] of Object.entries(domainRules)) {
+    if (keywords.some(keyword => normalized.includes(keyword))) return domain;
+  }
+
   return "litigation";
 }
 
@@ -54,6 +117,20 @@ export class SystemDataAccess {
     return null;
   }
 
+  public static findRecordByToken(token: string): RecordItem | null {
+    const normalizedToken = String(token || "").trim();
+    if (!normalizedToken) return null;
+    const exact = this.getRecordById(normalizedToken);
+    if (exact) return exact;
+
+    return this.getAllRecords().find((record: any) =>
+      String(record.id || "") === normalizedToken ||
+      String(record.systemId || "") === normalizedToken ||
+      String(record.contractId || "") === normalizedToken ||
+      JSON.stringify(record).includes(normalizedToken)
+    ) || null;
+  }
+
   public static saveRecord(record: RecordItem): void {
     const category = record.category || record.practice_area;
     const domain = mapCategoryToDomain(category);
@@ -74,6 +151,13 @@ export class SystemDataAccess {
     } catch (e: any) {
       console.warn("Write-through to legacy erp_records table skipped or failed:", e.message);
     }
+
+    emitDomainRecordChange({
+      action: "upsert",
+      domain,
+      id: String(record.id),
+      data: record,
+    });
   }
 
   public static deleteRecord(id: string): void {
@@ -89,6 +173,12 @@ export class SystemDataAccess {
     try {
       db.prepare(`DELETE FROM erp_records WHERE id = ?`).run(stringId);
     } catch (e) {}
+
+    emitDomainRecordChange({
+      action: "delete",
+      domain: "federated",
+      id: stringId,
+    });
   }
 
   public static queryFederated(options: {

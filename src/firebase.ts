@@ -1,6 +1,6 @@
 import { initializeApp, getApp, getApps } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer, setLogLevel, Firestore } from 'firebase/firestore';
+import { getFirestore, setLogLevel, Firestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -79,22 +79,4 @@ export const db = new Proxy({}, {
 
 export const auth = getAuth(app);
 
-async function testConnection() {
-  if (typeof window === 'undefined') {
-    // Skip testing connection on the server-side where outbound connections are restricted
-    return;
-  }
-  if (dbInstance && dbInstance.isMock) {
-    console.warn("Skipping Firestore connection test since database is in mock fallback mode.");
-    return;
-  }
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && (error.message.includes('the client is offline') || error.message.includes('offline'))) {
-      console.error("Please check your Firebase configuration.");
-    }
-  }
-}
-testConnection();
 

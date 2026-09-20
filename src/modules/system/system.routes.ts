@@ -6,7 +6,9 @@ import db from "../../db/database";
 import { db as firestoreDb } from "../../firebase";
 import { collection, getDocs, doc, setDoc, getDoc } from "firebase/firestore";
 import { auth } from "../../middleware/auth";
+import { mapRoleToDb } from "../../utils/role";
 import { MemoryMonitor } from "../../services/MemoryMonitor";
+import { SharedDirectoryService } from "../../application/services/sharedDirectory.service";
 
 const router = Router();
 
@@ -16,7 +18,40 @@ let activeAlerts: any[] = [];
 let baseWafBlocks = 0;
 let baseBandwidth = 0;
 
-router.post("/audit-logs", (req, res) => {
+function getEffectiveSystemUser(req: any) {
+  const sessionUser = req.user || req.session?.user;
+  if (!sessionUser) return null;
+  try {
+    let currentUser: any = null;
+    if (sessionUser.id) {
+      currentUser = db.prepare("SELECT id, username, name, role, account_type, title FROM users WHERE id = ?").get(sessionUser.id) as any;
+    }
+    if (!currentUser && sessionUser.username) {
+      currentUser = db.prepare("SELECT id, username, name, role, account_type, title FROM users WHERE username = ? LIMIT 1").get(sessionUser.username) as any;
+    }
+    return currentUser ? { ...sessionUser, ...currentUser } : sessionUser;
+  } catch (error) {
+    return sessionUser;
+  }
+}
+
+function canMonitorSystem(user: any) {
+  const role = mapRoleToDb(user?.role);
+  const username = String(user?.username || user?.email || "").trim().toLowerCase();
+  const name = String(user?.name || "").trim().toLowerCase();
+  const title = String(user?.title || "").trim().toLowerCase();
+  return ['admin', 'director', 'deputyDirector', 'controller', 'manager'].includes(role)
+    || username === 'admin'
+    || username.includes('admin')
+    || name.includes('quản trị')
+    || name.includes('admin')
+    || title.includes('quản trị')
+    || title.includes('admin')
+    || title.includes('giám đốc')
+    || title.includes('giam doc');
+}
+
+router.post("/audit-logs", auth, (req, res) => {
   try {
     const { user, action, target, role, status } = req.body;
     const timeStr = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -36,16 +71,19 @@ router.post("/audit-logs", (req, res) => {
   }
 });
 
-router.get("/status", (req, res) => {
+router.get("/status", auth, (req, res) => {
   let realAuditLogs: any[] = [];
   try {
-     const staffUsers = db.prepare("SELECT name, username, role FROM users WHERE role != 'client'").all() as any[];
+     const staffUsers = SharedDirectoryService.listPersonnel({
+       includeAdmins: true,
+       includePartners: true
+     });
      const getRealUser = (idx: number, defaultRole = 'staff') => {
        if (staffUsers && staffUsers.length > 0) {
          const u = staffUsers[idx % staffUsers.length];
          return { name: u.name || u.username, role: u.role || defaultRole };
        }
-       return { name: "Quản trị viên", role: "admin" };
+      return { name: "Không xác định", role: defaultRole };
      };
 
      const logs = db.prepare("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 50").all() as any[];
@@ -54,13 +92,6 @@ router.get("/status", (req, res) => {
            let userName = l.user;
            let userRole = l.user?.toLowerCase().includes("admin") || l.user?.toLowerCase().includes("giám đốc") ? "admin" : "staff";
            
-           // Replace mock names with real personnel account
-           if (!userName || userName.includes("Nguyễn Văn A") || userName.includes("Trần Minh B") || userName.includes("Lê Thị Mai") || userName === "System OCR" || userName === "System WAF") {
-              const realU = getRealUser(i, userRole);
-              userName = realU.name;
-              userRole = realU.role;
-           }
-
            return {
               id: l.id,
               time: l.time || new Date().toLocaleTimeString('vi-VN'),
@@ -71,30 +102,6 @@ router.get("/status", (req, res) => {
               status: l.action?.toLowerCase().includes("chặn") || l.action?.toLowerCase().includes("từ chối") ? "Đã chặn" : "Thành công"
            };
         });
-     } else {
-        const u0 = getRealUser(0, "admin");
-        const u1 = getRealUser(1, "staff");
-        const u2 = getRealUser(2, "staff");
-        const u3 = getRealUser(3, "staff");
-
-        const defaultLogs = [
-          { user: u0.name, action: "Đã cập nhật Hợp đồng dịch vụ pháp lý HS-2026", target: "Hồ sơ HS-2026", role: u0.role, status: "Thành công" },
-          { user: u1.name, action: "Đã chấm công đúng giờ thành công", target: "AI Face Recognition", role: u1.role, status: "Thành công" },
-          { user: u2.name, action: "Số hóa OCR thành công tài liệu vụ việc DS-2026", target: "Căn cước / Hồ sơ", role: u2.role, status: "Thành công" },
-          { user: u3.name, action: "Xác thực bảo mật tài khoản nhân sự", target: "Hệ thống ERP", role: u3.role, status: "Thành công" },
-          { user: u0.name, action: "Phê duyệt bảng lương nhân sự tháng 07/2026", target: "Bảng lương", role: u0.role, status: "Thành công" }
-        ];
-        defaultLogs.forEach((il, i) => {
-          try {
-            db.prepare(`INSERT INTO audit_logs VALUES (?,?,?,?)`).run(
-              (Date.now() - i * 60000).toString(), il.user, il.action, new Date().toLocaleTimeString('vi-VN')
-            );
-          } catch(e) {}
-        });
-        realAuditLogs = defaultLogs.map(l => ({
-          ...l,
-          time: new Date().toLocaleTimeString('vi-VN')
-        }));
      }
   } catch(e) {}
   
@@ -123,19 +130,27 @@ router.get("/status", (req, res) => {
      }
   } catch(e) {}
 
-  const cpuUsage = os.loadavg()[0] || 0; // 1 minute load avg
+  const cpuCount = Math.max(1, os.cpus().length);
+  const cpuUsage = Math.min(100, ((os.loadavg()[0] || 0) / cpuCount) * 100);
   
   // Use process memory instead of os.totalmem, which often reads the host VM's 4GB limit
   // and looks like fake/placeholder data.
   const memUsage = process.memoryUsage();
   const usedMemMB = memUsage.rss / 1024 / 1024;
-  const totalMemMB = 512; // Cloud Run Sandbox typical limit
-  const usedMemPercent = (usedMemMB / totalMemMB) * 100;
+  const memoryMetrics = MemoryMonitor.getMetrics();
+  const totalMemMB = memoryMetrics.memoryLimit / 1024 / 1024;
+  const usedMemPercent = memoryMetrics.memoryPercent;
   
-  const totalDisk = 200; // GB
+  let totalDisk = 0;
+  try {
+    if (fs.existsSync(dbPath) && typeof (fs as any).statfsSync === "function") {
+      const diskStats = (fs as any).statfsSync(dbPath);
+      totalDisk = (Number(diskStats.blocks) * Number(diskStats.bsize)) / (1024 * 1024 * 1024);
+    }
+  } catch (e) {}
   
-  const networkIn = 0; // Mbps
-  const networkOut = 0; // Mbps
+  const networkIn = 0;
+  const networkOut = 0;
 
   // Read real data for DB Status
   let dbConnections = 1; // Sqlite uses 1 file connection
@@ -193,9 +208,11 @@ router.get("/status", (req, res) => {
 
   try {
      // Populate chart data based on real logs roughly
-     const allLogs = db.prepare("SELECT * FROM audit_logs").all() as any[];
-     loginsToday = allLogs.filter(l => l.action?.toLowerCase().includes("đăng nhập") && !l.action?.toLowerCase().includes("thất bại") && !l.action?.toLowerCase().includes("sai")).length;
-     loginsFailedToday = allLogs.filter(l => l.action?.toLowerCase().includes("thất bại") || l.action?.toLowerCase().includes("sai")).length;
+        const allLogs = db.prepare("SELECT * FROM audit_logs").all() as any[];
+        const today = new Date().toISOString().slice(0, 10);
+        const todayLogs = allLogs.filter((log) => String(log.performedAt || log.time || log.created_at || "").slice(0, 10) === today);
+        loginsToday = todayLogs.filter(l => l.action?.toLowerCase().includes("đăng nhập") && !l.action?.toLowerCase().includes("thất bại") && !l.action?.toLowerCase().includes("sai")).length;
+        loginsFailedToday = todayLogs.filter(l => l.action?.toLowerCase().includes("thất bại") || l.action?.toLowerCase().includes("sai")).length;
      
      // basic mapping to chart data just taking overall count
      if (loginsToday > 0) {
@@ -224,9 +241,9 @@ router.get("/status", (req, res) => {
     storageUsed: storageRealUsed.toFixed(4),
     storageTotal: totalDisk,
     bandwidthUsed: baseBandwidth.toFixed(2),
-    attacksBlocked: baseWafBlocks,
+    attacksBlocked: systemLogs.length,
     attacksBlockedIncrease: 0, 
-    uptimePercent: (99.98).toFixed(3)
+    uptimePercent: null
   };
 
   // derived metrics for UI
@@ -245,11 +262,12 @@ router.get("/status", (req, res) => {
       platform: os.platform(),
       osRelease: os.release(),
       nodeVersion: process.version,
-      diskUsage: (storageRealUsed / totalDisk) * 100,
+      diskUsage: totalDisk > 0 ? Math.min(100, (storageRealUsed / totalDisk) * 100) : 0,
       totalDisk,
       usedDisk: storageRealUsed.toFixed(4),
       networkIn,
       networkOut,
+      networkSource: "UNAVAILABLE",
       logs: activeAlerts,
       activeConnections: realActiveConnections,
       adminSessions: realAdminSessions,
@@ -258,7 +276,7 @@ router.get("/status", (req, res) => {
       suspiciousIPs: suspiciousIPs,
       unauthorizedAccess: unauthorizedAccess,
       status: activeAlerts.length > 0 ? "warning" : "ok",
-      wafBlocks: baseWafBlocks,
+      wafBlocks: systemLogs.length,
       dbStatus,
       loginStats,
       auditLogs: realAuditLogs,
@@ -267,7 +285,7 @@ router.get("/status", (req, res) => {
   });
 });
 
-router.post("/metrics", (req, res) => {
+router.post("/metrics", auth, (req, res) => {
   try {
     const { id, metric_type, value, details, timestamp } = req.body;
     db.prepare(`
@@ -285,7 +303,7 @@ router.post("/metrics", (req, res) => {
   }
 });
 
-router.post("/qa-evaluation", (req, res) => {
+router.post("/qa-evaluation", auth, (req, res) => {
   try {
     const { id, call_id, staff_name, score, has_violation, violated_keywords, audited_at, details } = req.body;
     db.prepare(`
@@ -310,7 +328,7 @@ router.post("/qa-evaluation", (req, res) => {
   }
 });
 
-router.get("/qa-evaluations", (req, res) => {
+router.get("/qa-evaluations", auth, (req, res) => {
   try {
     const staffName = req.query.staffName;
     let query = "SELECT * FROM quality_assurance_evaluations";
@@ -327,7 +345,7 @@ router.get("/qa-evaluations", (req, res) => {
   }
 });
 
-router.get("/metrics", (req, res) => {
+router.get("/metrics", auth, (req, res) => {
   try {
     const rows = db.prepare("SELECT * FROM system_performance_metrics ORDER BY timestamp DESC LIMIT 100").all();
     res.json({ success: true, data: rows });
@@ -336,7 +354,7 @@ router.get("/metrics", (req, res) => {
   }
 });
 
-router.get("/sync-audit", async (req, res) => {
+router.get("/sync-audit", auth, async (req, res) => {
   try {
     const localCases = db.prepare("SELECT * FROM cases").all() as any[];
     const casesColRef = collection(firestoreDb, "cases");
@@ -484,7 +502,7 @@ router.get("/sync-audit", async (req, res) => {
   }
 });
 
-router.post("/sync-override", async (req, res) => {
+router.post("/sync-override", auth, async (req, res) => {
   try {
     const { id, tableName, direction } = req.body;
     
@@ -589,8 +607,13 @@ router.post("/sync-override", async (req, res) => {
   }
 });
 
-router.get("/global-search", async (req, res) => {
+router.get("/global-search", auth, async (req, res) => {
   try {
+    const currentUser = (req as any).user || (req as any).session?.user || null;
+    if (!currentUser) {
+      return res.status(401).json({ success: false, error: "Authentication required." });
+    }
+
     const queryStr = (req.query.q as string || "").trim();
     if (!queryStr) {
       return res.json({ success: true, results: { clients: [], cases: [], documents: [] } });
@@ -598,6 +621,7 @@ router.get("/global-search", async (req, res) => {
 
     const normalizedQuery = queryStr.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
     const searchLike = `%${queryStr}%`;
+    const isClient = String(currentUser.role || "").toLowerCase() === "client";
 
     // 1. Fetch ERP Records (Local SQLite)
     const erpRows = db.prepare("SELECT * FROM erp_records").all() as any[];
@@ -618,7 +642,15 @@ router.get("/global-search", async (req, res) => {
       dossiers: any[];
     }>();
 
-    allErpRecords.forEach(record => {
+    const scopedErpRecords = isClient
+      ? allErpRecords.filter((record: any) => {
+          const matchClient = record.client === currentUser.name || record.clientIdCard === currentUser.username || record.clientPhone === currentUser.phone;
+          const matchCase = (currentUser.case_id && String(currentUser.case_id) === String(record.id));
+          return matchClient || matchCase;
+        })
+      : allErpRecords;
+
+    scopedErpRecords.forEach(record => {
       const cccd = (record.clientIdCard || record.contractDetails?.customerIdCard || record.contractDetails?.obligorIdCard || "").trim();
       const clientName = (record.client || "").trim();
       const taxId = (record.taxCode || record.taxId || record.contractDetails?.obligorBusinessId || "").trim();
@@ -673,7 +705,7 @@ router.get("/global-search", async (req, res) => {
 
     // Match Cases (individual case matches)
     const matchedCases: any[] = [];
-    allErpRecords.forEach(record => {
+    scopedErpRecords.forEach(record => {
       const titleNorm = (record.title || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
       const idNorm = (record.id || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
       const clientNorm = (record.client || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -961,12 +993,11 @@ router.delete("/gmail-accounts/:email", async (req, res) => {
 // GET /api/system/memory - Authenticated real-time diagnostic memory telemetry
 router.get("/memory", auth, (req: any, res: any) => {
   try {
-    const user = req.user || req.session?.user;
+    const user = getEffectiveSystemUser(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access: login required" });
     }
-    const role = user.role?.toLowerCase();
-    if (role !== "admin" && role !== "director" && role !== "deputyDirector" && role !== "controller" && role !== "manager") {
+    if (!canMonitorSystem(user)) {
       return res.status(403).json({ error: "Access Denied: Admin or system monitoring role required" });
     }
 
@@ -1041,12 +1072,11 @@ router.get("/memory", auth, (req: any, res: any) => {
 // GET /api/system/memory/events - Cursor Paginated history of event notifications
 router.get("/memory/events", auth, (req: any, res: any) => {
   try {
-    const user = req.user || req.session?.user;
+    const user = getEffectiveSystemUser(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized" });
     }
-    const role = user.role?.toLowerCase();
-    if (role !== "admin" && role !== "director" && role !== "deputyDirector" && role !== "controller" && role !== "manager") {
+    if (!canMonitorSystem(user)) {
       return res.status(403).json({ error: "Access Denied" });
     }
 

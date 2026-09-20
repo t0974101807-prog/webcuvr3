@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from "express";
 import db from "../../db/database";
-import { auth } from "../../middleware/auth";
+import { auth, requireRoles } from "../../middleware/auth";
 import { executeMcpTool, mcpToolsRegistry } from "./mcp.server";
 
 const router = Router();
@@ -200,7 +200,7 @@ router.get("/devices", auth, (req: Request, res: Response) => {
 });
 
 // 2. Register or update a device
-router.post("/devices", auth, (req: Request, res: Response) => {
+router.post("/devices", requireRoles("admin", "director", "controller"), (req: Request, res: Response) => {
   try {
     const { id, name, mac_address, ip_address, location, device_type, api_key } = req.body;
     if (!id || !name) {
@@ -228,7 +228,7 @@ router.post("/devices", auth, (req: Request, res: Response) => {
 });
 
 // Delete a device
-router.delete("/devices/:id", auth, (req: Request, res: Response) => {
+router.delete("/devices/:id", requireRoles("admin", "director", "controller"), (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     db.prepare("DELETE FROM iot_devices WHERE id = ?").run(id);
@@ -358,7 +358,7 @@ router.get("/rules", auth, (req: Request, res: Response) => {
 });
 
 // 8. Create or Update Rule
-router.post("/rules", auth, (req: Request, res: Response) => {
+router.post("/rules", requireRoles("admin", "director", "controller"), (req: Request, res: Response) => {
   try {
     const { id, name, triggerDevice, triggerParam, operator, triggerValue, actionDevice, actionCommand, active } = req.body;
     if (!id || !name) {
@@ -384,7 +384,7 @@ router.post("/rules", auth, (req: Request, res: Response) => {
 });
 
 // 9. Toggle Rule Active
-router.post("/rules/:id/toggle", auth, (req: Request, res: Response) => {
+router.post("/rules/:id/toggle", requireRoles("admin", "director", "controller"), (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const rule = db.prepare("SELECT active FROM iot_rules WHERE id = ?").get(id) as { active: number } | undefined;
@@ -400,7 +400,7 @@ router.post("/rules/:id/toggle", auth, (req: Request, res: Response) => {
 });
 
 // 10. Delete Rule
-router.delete("/rules/:id", auth, (req: Request, res: Response) => {
+router.delete("/rules/:id", requireRoles("admin", "director", "controller"), (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     db.prepare("DELETE FROM iot_rules WHERE id = ?").run(id);
@@ -421,7 +421,7 @@ router.get("/alerts", auth, (req: Request, res: Response) => {
 });
 
 // 12. Resolve Alert
-router.post("/alerts/:id/resolve", auth, (req: Request, res: Response) => {
+router.post("/alerts/:id/resolve", requireRoles("admin", "director", "controller"), (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     db.prepare("UPDATE iot_alerts SET status = 'resolved', severity = 'resolved' WHERE id = ?").run(id);
@@ -432,7 +432,7 @@ router.post("/alerts/:id/resolve", auth, (req: Request, res: Response) => {
 });
 
 // 13. Mute Alert
-router.post("/alerts/:id/mute", auth, (req: Request, res: Response) => {
+router.post("/alerts/:id/mute", requireRoles("admin", "director", "controller"), (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     db.prepare("UPDATE iot_alerts SET status = 'muted' WHERE id = ?").run(id);
@@ -443,7 +443,7 @@ router.post("/alerts/:id/mute", auth, (req: Request, res: Response) => {
 });
 
 // 14. Execute Device Command / Action (Reset, OTA Update, etc.)
-router.post("/devices/:id/action", auth, (req: Request, res: Response) => {
+router.post("/devices/:id/action", requireRoles("admin", "director", "controller"), (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { action } = req.body;

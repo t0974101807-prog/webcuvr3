@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import { config } from "../../config/env";
 import { validatePassword } from "../../utils/password";
 import { enrichUsersWithStaffCode } from "../../utils/staffCode";
+import { mapRoleToDb } from "../../utils/role";
 
 export interface AuthenticatedUser {
   id: number;
@@ -17,9 +18,37 @@ export interface AuthenticatedUser {
   email?: string;
   avatar?: string;
   practice_areas?: string;
+  account_type?: string;
 }
 
 export class AuthService {
+  private static isProtectedAdmin(user: any): boolean {
+    return String(user?.username || '').toLowerCase() === 'admin' || mapRoleToDb(user?.role) === 'admin';
+  }
+
+  public static getLoginLock(dbUser: any): { locked: boolean; retryAfterSeconds: number } {
+    const lockedUntil = dbUser?.locked_until ? new Date(dbUser.locked_until).getTime() : 0;
+    if (!lockedUntil || lockedUntil <= Date.now()) {
+      return { locked: false, retryAfterSeconds: 0 };
+    }
+    return { locked: true, retryAfterSeconds: Math.ceil((lockedUntil - Date.now()) / 1000) };
+  }
+
+  public static recordFailedLogin(dbUser: any): void {
+    const failures = Number(dbUser?.login_failures || 0) + 1;
+    const maxFailures = AuthService.isProtectedAdmin(dbUser) ? 5 : 10;
+    const lockMinutes = AuthService.isProtectedAdmin(dbUser) ? 30 : 10;
+    const lockedUntil = failures >= maxFailures
+      ? new Date(Date.now() + lockMinutes * 60 * 1000).toISOString()
+      : null;
+    db.prepare('UPDATE users SET login_failures = ?, locked_until = ? WHERE id = ?')
+      .run(failures >= maxFailures ? 0 : failures, lockedUntil, dbUser.id);
+  }
+
+  public static clearFailedLogins(userId: number): void {
+    db.prepare('UPDATE users SET login_failures = 0, locked_until = NULL WHERE id = ?').run(userId);
+  }
+
   /**
    * Finds a user by their username or phone number.
    */
@@ -99,7 +128,7 @@ export class AuthService {
    */
   public static getUserDetails(userId: number): AuthenticatedUser | null {
     try {
-      const allUsers = db.prepare(`SELECT id, username, name, role, title, staff_code, branch, start_date, contract_type, contract_sign_date, salary, bonus, avatar, phone, email, dob, gender, address, case_id, practice_areas FROM users`).all();
+      const allUsers = db.prepare(`SELECT id, username, name, role, title, staff_code, branch, start_date, contract_type, contract_sign_date, salary, bonus, avatar, phone, email, dob, gender, address, case_id, practice_areas, account_type FROM users`).all();
       const enriched = enrichUsersWithStaffCode(allUsers);
       const user = enriched.find(u => u.id === userId);
       return user || null;
@@ -144,7 +173,7 @@ export class AuthService {
     // Update with new hashed password
     try {
       const hashedNewPassword = bcrypt.hashSync(newPassword, 10);
-      db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashedNewPassword, userId);
+      db.prepare('UPDATE users SET password = ?, known_devices = ?, login_failures = 0, locked_until = NULL WHERE id = ?').run(hashedNewPassword, '[]', userId);
       return { success: true, message: "Đổi mật khẩu thành công" };
     } catch (err: any) {
       console.error("[AuthService] Error updating password in database:", err);

@@ -23,6 +23,7 @@ import {
   BarChart4, 
   ListFilter 
 } from "lucide-react";
+import { fetchApi } from "../utils/api";
 
 interface MemoryMonitorViewProps {
   language: "vi" | "en";
@@ -161,17 +162,19 @@ export default function MemoryMonitorView({ language }: MemoryMonitorViewProps) 
   // Fetch telemetry on load and interval
   const fetchTelemetry = async () => {
     try {
-      const res = await fetch("/api/system/memory");
+      const res = await fetchApi("/api/system/memory");
       if (!res.ok) {
         if (res.status === 401 || res.status === 403) {
           throw new Error(language === "vi" ? "Từ chối truy cập: Quyền giám sát yêu cầu" : "Access Denied: Permissions required");
         }
         throw new Error("Failed to fetch memory data");
       }
-      const json = await res.ok ? await res.json() : null;
+      const json = await res.json();
       if (json && json.success) {
         setTelemetry(json);
         setError(null);
+      } else {
+        throw new Error(json?.error || "Failed to fetch memory data");
       }
     } catch (err: any) {
       setError(err.message);
@@ -186,7 +189,7 @@ export default function MemoryMonitorView({ language }: MemoryMonitorViewProps) 
     try {
       let url = "/api/system/memory/events?limit=8";
       if (cursor) url += `&cursor=${cursor}`;
-      const res = await fetch(url);
+      const res = await fetchApi(url);
       if (res.ok) {
         const json = await res.json();
         if (json.success) {
@@ -349,7 +352,7 @@ export default function MemoryMonitorView({ language }: MemoryMonitorViewProps) 
               {memoryPercent.toFixed(1)}%
             </p>
             <p className="text-xs text-slate-500 mt-1">
-              {formatBytes(telemetry?.container?.memoryCurrent || 0)} / {formatBytes(telemetry?.container?.memoryLimit || 1024 * 1024 * 512)}
+              {formatBytes(telemetry?.container?.memoryCurrent || 0)} / {telemetry?.container?.memoryLimit ? formatBytes(telemetry.container.memoryLimit) : "--"}
             </p>
           </div>
           <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">

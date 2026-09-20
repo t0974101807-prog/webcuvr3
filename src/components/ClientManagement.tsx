@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Users, Activity, DollarSign, Search, User, UserCheck, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Users, Activity, DollarSign, Search, User, UserCheck, Trash2, ExternalLink, Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 import { fetchApi } from '../utils/api';
 import { io } from 'socket.io-client';
 import { useContactSettings } from '../hooks/useContactSettings';
+import { useFullscreen } from '../hooks/useFullscreen';
 
 export default function ClientManagement({ language = "vi", onBack, isEmbedded = false }: { language?: "vi" | "en"; onBack?: () => void; isEmbedded?: boolean }) {
   const { settings: contactSettings } = useContactSettings();
@@ -54,6 +55,10 @@ export default function ClientManagement({ language = "vi", onBack, isEmbedded =
   const [onlineVisitors, setOnlineVisitors] = useState(1);
   const [offices, setOffices] = useState<any[]>([]);
   const [allUsers, setAllUsers] = useState<any[]>([]);
+  const [selectedClientRecords, setSelectedClientRecords] = useState<{ name: string; records: any[] } | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const managementRef = useRef<HTMLElement>(null);
+  const { isFullscreen, toggleFullscreen, virtualClass } = useFullscreen(managementRef);
 
   const load = () => {
     const endpoint = activeCategory === "client" ? "/api/clients" : "/api/partners";
@@ -70,9 +75,10 @@ export default function ClientManagement({ language = "vi", onBack, isEmbedded =
         console.error(err);
         setClients([]);
       });
-    fetchApi("/api/erp-records").then(res => res.json()).then(data => {
-      if (data && Array.isArray(data)) {
-        const unique = Array.from(new Map(data.map((item: any) => [item.id, item])).values());
+    fetchApi("/api/erp-records/all").then(res => res.json()).then(data => {
+      const rows = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
+      if (rows.length > 0 || data?.success) {
+        const unique = Array.from(new Map(rows.map((item: any) => [item.systemId || item.id, item])).values());
         setRecords(unique as any);
       } else {
         setRecords([]);
@@ -200,12 +206,19 @@ export default function ClientManagement({ language = "vi", onBack, isEmbedded =
       }
 
       const rawClientName = r.client || r.clientName;
-      if (!rawClientName) return;
-      
-      const normalizedName = rawClientName.trim().toLowerCase();
-      // Find matching client in our known clients list
-      const matchedClient = clientsArr.find(c => c.name.trim().toLowerCase() === normalizedName);
-      const targetName = matchedClient ? matchedClient.name : rawClientName.trim();
+      const recordKeys = [r.id, r.systemId, r.caseId, r.case_id, r.caseCode, r.case_code]
+        .filter(Boolean)
+        .map(value => String(value).trim().toLowerCase());
+      const normalizedName = rawClientName ? String(rawClientName).trim().toLowerCase() : "";
+      const linkedClient = clientsArr.find(c => {
+        const clientKeys = [c.id, c.case_id, c.caseId, c.case_code, c.caseCode]
+          .filter(Boolean)
+          .map(value => String(value).trim().toLowerCase());
+        return (normalizedName && String(c.name || '').trim().toLowerCase() === normalizedName)
+          || clientKeys.some(key => recordKeys.includes(key));
+      });
+      if (!rawClientName && !linkedClient) return;
+      const targetName = linkedClient ? linkedClient.name : String(rawClientName).trim();
       
       if (!stats[targetName]) {
         stats[targetName] = { totalCases: 0, activeCases: 0 };
@@ -258,6 +271,11 @@ export default function ClientManagement({ language = "vi", onBack, isEmbedded =
     return totals;
   }, [processedClients]);
 
+  const getClientRecords = (client: any) => records.filter((record: any) => {
+    const recordClient = String(record.client || record.clientName || '').trim().toLowerCase();
+    return recordClient === String(client.name || '').trim().toLowerCase();
+  });
+
   return (
     <div className={isEmbedded ? "font-sans w-full" : "min-h-screen bg-slate-50 font-sans"}>
       {!isEmbedded && (
@@ -272,7 +290,7 @@ export default function ClientManagement({ language = "vi", onBack, isEmbedded =
               {language === "vi" ? "Quản lý Khách hàng & Đối tác" : "Client & Partner Management"}
             </h1>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             {onBack && (
               <button onClick={onBack} className="text-sm font-medium text-blue-600 hover:text-blue-700">Thoát / Trang chủ</button>
             )}
@@ -280,7 +298,19 @@ export default function ClientManagement({ language = "vi", onBack, isEmbedded =
         </header>
       )}
 
-      <main className={isEmbedded ? "space-y-6" : "max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6"}>
+      <main ref={managementRef} className={`${isEmbedded ? "space-y-6" : "max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6"} ${virtualClass}`}>
+        {isFullscreen && isEmbedded && (
+          <div className="flex items-center justify-between border-b border-slate-200 pb-4">
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">{language === "vi" ? "Quản lý Khách hàng & Đối tác" : "Client & Partner Management"}</h2>
+              <p className="text-xs text-slate-500">{language === "vi" ? "Không gian làm việc toàn màn hình" : "Fullscreen workspace"}</p>
+            </div>
+            <button onClick={toggleFullscreen} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm">
+              <Minimize2 size={15} />
+              <span>{language === "vi" ? "Thu nhỏ" : "Minimize"}</span>
+            </button>
+          </div>
+        )}
         {/* Toggle Category Segmented Control */}
         <div className="flex bg-slate-100 p-1 rounded-lg w-fit">
           <button
@@ -450,7 +480,7 @@ export default function ClientManagement({ language = "vi", onBack, isEmbedded =
             </form>
           </div>
 
-          <div className="lg:col-span-3 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-[400px]">
+          <div className="lg:col-span-3 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-[400px]" style={{ zoom: zoomLevel }}>
             <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
               <h3 className="font-semibold text-slate-800 flex items-center gap-2">
                 <User size={18} className="text-blue-600" />
@@ -516,9 +546,15 @@ export default function ClientManagement({ language = "vi", onBack, isEmbedded =
                         </td>
                         <td className="px-6 py-3 text-center">
                           <div className="flex items-center justify-center gap-1.5">
-                            <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-medium text-xs border border-blue-200" title="Tổng số hồ sơ">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedClientRecords({ name: c.name, records: getClientRecords(c) })}
+                              className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-medium text-xs border border-blue-200 hover:bg-blue-200 transition-colors cursor-pointer inline-flex items-center gap-1"
+                              title="Mở danh sách hồ sơ thực tế"
+                            >
                               {c.stats.totalCases}
-                            </span>
+                              <ExternalLink size={11} />
+                            </button>
                             {c.stats.activeCases > 0 && (
                               <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded font-medium text-xs border border-emerald-200" title="Hồ sơ đang xử lý">
                                 {c.stats.activeCases} active
@@ -559,6 +595,55 @@ export default function ClientManagement({ language = "vi", onBack, isEmbedded =
           </div>
         </div>
       </main>
+      <div className="fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-slate-200 bg-white/95 p-1.5 shadow-lg backdrop-blur-md" aria-label={language === "vi" ? "Điều khiển thu phóng" : "Zoom controls"}>
+        <button
+          onClick={() => setZoomLevel((current) => Math.max(0.8, Number((current - 0.1).toFixed(1))))}
+          disabled={zoomLevel <= 0.8}
+          className="rounded-lg p-2 text-slate-600 transition hover:bg-slate-100 disabled:opacity-40"
+          title={language === "vi" ? "Thu nhỏ" : "Zoom out"}
+        >
+          <ZoomOut size={16} />
+        </button>
+        <button
+          onClick={() => setZoomLevel(1)}
+          className="min-w-14 rounded-lg px-2 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-100"
+          title={language === "vi" ? "Đặt lại kích thước" : "Reset zoom"}
+        >
+          <RotateCcw size={14} className="mx-auto mb-0.5" />
+          {Math.round(zoomLevel * 100)}%
+        </button>
+        <button
+          onClick={() => setZoomLevel((current) => Math.min(1.2, Number((current + 0.1).toFixed(1))))}
+          disabled={zoomLevel >= 1.2}
+          className="rounded-lg p-2 text-slate-600 transition hover:bg-slate-100 disabled:opacity-40"
+          title={language === "vi" ? "Phóng to" : "Zoom in"}
+        >
+          <ZoomIn size={16} />
+        </button>
+        <span className="mx-1 h-5 w-px bg-slate-200" />
+        <button
+          onClick={toggleFullscreen}
+          className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+          title={isFullscreen ? "Thu nhỏ" : "Toàn màn hình"}
+        >
+          {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+          <span className="hidden sm:inline">{isFullscreen ? "Thu nhỏ" : "Toàn màn hình"}</span>
+        </button>
+      </div>
+
+      {selectedClientRecords && (
+        <div className="fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-3xl max-h-[80vh] overflow-hidden">
+            <div className="p-5 border-b border-slate-200 flex items-center justify-between">
+              <div><h3 className="text-lg font-bold text-slate-900">Hồ sơ của {selectedClientRecords.name}</h3><p className="text-xs text-slate-500 mt-1">Danh sách lấy trực tiếp từ dữ liệu ERP hiện tại.</p></div>
+              <button type="button" onClick={() => setSelectedClientRecords(null)} className="p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700" title="Đóng"><span className="text-xl leading-none">×</span></button>
+            </div>
+            <div className="p-5 overflow-y-auto max-h-[60vh] space-y-3">
+              {selectedClientRecords.records.length > 0 ? selectedClientRecords.records.map((record: any) => <div key={record.id || record.systemId} className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between gap-4"><div className="min-w-0"><p className="font-semibold text-slate-800 truncate">{record.title || record.caseName || record.name || 'Hồ sơ vụ việc'}</p><p className="text-xs text-slate-500 mt-1">{record.systemId || record.caseCode || record.id || 'Chưa có mã hồ sơ'}</p></div><span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 whitespace-nowrap">{record.status || 'Đang xử lý'}</span></div>) : <div className="py-10 text-center text-sm text-slate-400">Không có hồ sơ thực tế để hiển thị.</div>}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

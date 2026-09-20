@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { collection, onSnapshot, query } from 'firebase/firestore';
 import { db } from '../firebase';
+import { filterNonAdminPersonnel } from '../utils/personnelFilters';
 
 export interface UserPersonnel {
   id: string | number;
@@ -32,23 +33,7 @@ export function usePersonnel() {
           list.push({ id: doc.id, ...doc.data() });
         });
         
-        // Filter out admin accounts as per user request (role or email contains 'admin')
-        const filtered = list.filter((u) => {
-          const role = (u.role || '').toLowerCase();
-          const email = (u.email || '').toLowerCase();
-          const username = (u.username || '').toLowerCase();
-          const title = (u.title || '').toLowerCase();
-          
-          const isAdmin = 
-            role === 'admin' || 
-            email === 'admin' || 
-            email.includes('admin') ||
-            username === 'admin' ||
-            title.includes('quản trị') ||
-            title.includes('admin');
-            
-          return !isAdmin;
-        });
+        const filtered = filterNonAdminPersonnel(list);
 
         // Sort alphabetically by name
         filtered.sort((a, b) => {

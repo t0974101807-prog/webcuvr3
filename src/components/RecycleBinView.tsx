@@ -308,33 +308,33 @@ export const RecycleBinView: React.FC<RecycleBinViewProps> = ({
 
   // Action methods: Restoration
   const executeRestoreItems = async (itemsToRestore: RecycleBinItem[]) => {
-    const ids = itemsToRestore.map(x => x.id);
+    const ids = [...new Set(itemsToRestore.map(x => x.id))];
+    if (!ids.length) {
+      setToastMessage("Không có hồ sơ phù hợp để khôi phục");
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+
     setActioningId("batch");
     try {
       const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
       const config = {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       };
-      for (const item of itemsToRestore) {
-        try {
-          await axios.post(`/api/trash/${item.id}/restore`, {}, config);
-        } catch {}
+      const response = await axios.post("/api/trash/restore", { ids }, config);
+      if (!response.data?.success) {
+        throw new Error(response.data?.error || "Không thể khôi phục hồ sơ đã chọn");
       }
 
-      // Keep backup state for UNDO
-      setToastUndoAction({
-        type: 'restore',
-        items: itemsToRestore
-      });
-
-      // Filter restored out of state
-      setItems(prev => prev.filter(x => !ids.includes(x.id)));
+      await fetchRecycleBin(true);
       setSelectedIds([]);
-      setToastMessage(`Đã khôi phục ${itemsToRestore.length} hồ sơ`);
+      setCurrentPage(1);
+      setToastUndoAction(null);
+      setToastMessage(`Đã khôi phục ${ids.length} hồ sơ`);
       setTimeout(() => setToastMessage(null), 5000);
 
       if (onRestoreSuccess) {
-        itemsToRestore.forEach(it => onRestoreSuccess(it.id));
+        ids.forEach(id => onRestoreSuccess(id));
       }
     } catch (err: any) {
       setError(err.message || "Khôi phục hàng loạt thất bại");
@@ -345,27 +345,41 @@ export const RecycleBinView: React.FC<RecycleBinViewProps> = ({
 
   // Action methods: Permanent deletion
   const executeDeleteItems = async (itemsToDelete: RecycleBinItem[]) => {
-    const ids = itemsToDelete.map(x => x.id);
+    const ids = [...new Set(itemsToDelete.map(x => x.id))];
+    if (!ids.length) {
+      setToastMessage("Không có hồ sơ phù hợp để xóa");
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+
     setActioningId("batch");
     try {
       const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
       const config = {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       };
-      for (const item of itemsToDelete) {
-        try {
-          await axios.delete(`/api/trash/${item.id}`, config);
-        } catch {}
+      const isEmptyingAll = itemsToDelete.length === items.length && items.length > 0;
+      const response = isEmptyingAll
+        ? await axios.delete("/api/trash/empty-bin", config)
+        : await axios.delete("/api/trash/hard-delete", {
+            ...config,
+            data: { ids }
+          });
+      if (!response.data?.success) {
+        throw new Error(response.data?.error || "Không thể xóa vĩnh viễn hồ sơ đã chọn");
       }
 
-      setToastUndoAction({
-        type: 'delete',
-        items: itemsToDelete
-      });
-
-      setItems(prev => prev.filter(x => !ids.includes(x.id)));
+      await fetchRecycleBin(true);
+      if (isEmptyingAll) {
+        setItems([]);
+      } else {
+        const remainingIds = new Set(itemsToDelete.map(item => item.id));
+        setItems(prev => prev.filter(item => !remainingIds.has(item.id)));
+      }
       setSelectedIds([]);
-      setToastMessage(`Đã xóa vĩnh viễn ${itemsToDelete.length} hồ sơ`);
+      setCurrentPage(1);
+      setToastUndoAction(null);
+      setToastMessage(`Đã xóa vĩnh viễn ${ids.length} hồ sơ`);
       setTimeout(() => setToastMessage(null), 5000);
     } catch (err: any) {
       setError(err.message || "Xóa vĩnh viễn hàng loạt thất bại");

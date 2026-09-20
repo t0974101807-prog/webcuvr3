@@ -5,6 +5,7 @@ import { GoogleGenAI } from "@google/genai";
 import { v4 as uuidv4 } from "uuid";
 import { encodeCursor, decodeCursor } from "../../utils/cursor";
 import { normalizeBranchName } from "../../utils/branch";
+import { SharedDirectoryService } from "../../application/services/sharedDirectory.service";
 
 const router = Router();
 
@@ -104,27 +105,15 @@ router.get("/employees", auth, (req: any, res: any) => {
     let hasNextPage = false;
 
     if (limit !== null) {
-      const params: any = {};
-      let query = `
-        SELECT id, username, name, role, title, staff_code, branch, start_date, 
-               contract_type, salary, bonus, avatar, phone, email, dob, gender, address, 
-               manager_id, practice_areas
-        FROM users 
-        WHERE role != 'client'
-      `;
-
+      let cursorId: number | string | undefined;
       if (cursorStr) {
         const cursor = decodeCursor(cursorStr);
         if (cursor && cursor.id) {
-          query += ` AND id < :cursorId`;
-          params.cursorId = cursor.id;
+          cursorId = cursor.id;
         }
       }
 
-      query += ` ORDER BY id DESC LIMIT :limitPlusOne`;
-      params.limitPlusOne = limit + 1;
-
-      const rows = db.prepare(query).all(params) as any[];
+      const rows = SharedDirectoryService.listStaffPage(cursorId, limit + 1);
       hasNextPage = rows.length > limit;
       employees = hasNextPage ? rows.slice(0, limit) : rows;
 
@@ -132,14 +121,7 @@ router.get("/employees", auth, (req: any, res: any) => {
         nextCursor = encodeCursor({ id: employees[employees.length - 1].id });
       }
     } else {
-      employees = db.prepare(`
-        SELECT id, username, name, role, title, staff_code, branch, start_date, 
-               contract_type, salary, bonus, avatar, phone, email, dob, gender, address, 
-               manager_id, practice_areas
-        FROM users 
-        WHERE role != 'client'
-        ORDER BY id DESC
-      `).all();
+      employees = SharedDirectoryService.listStaff();
     }
 
     // Enrich with employee code, department, QR, face/finger ID
@@ -176,7 +158,7 @@ router.get("/employees", auth, (req: any, res: any) => {
   }
 });
 
-router.post("/employees", auth, (req: any, res: any) => {
+router.post("/employees", requirePermission("manageUsers"), (req: any, res: any) => {
   try {
     const { username, name, role, title, branch, salary, phone, email, dob, gender, address, department } = req.body;
     const staff_code = req.body.staff_code || `NV-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -201,29 +183,13 @@ router.post("/employees", auth, (req: any, res: any) => {
 router.get("/departments", auth, (req: any, res: any) => {
   try {
     const depts = db.prepare("SELECT * FROM hr_departments").all();
-    if (depts.length === 0) {
-      // Seed default legal firm departments
-      const seedDepts = [
-        { id: "DEPT-01", department_name: "Ban Giám đốc & Điều hành", manager_id: "1", description: "Lãnh đạo & định hướng chiến lược", status: "Active" },
-        { id: "DEPT-02", department_name: "Phòng Tố tụng & Dân sự", manager_id: "2", description: "Tranh tụng tòa án, đại diện pháp lý", status: "Active" },
-        { id: "DEPT-03", department_name: "Phòng Doanh nghiệp & Đầu tư", manager_id: "3", description: "Tư vấn hợp đồng, M&A, Giấy phép", status: "Active" },
-        { id: "DEPT-04", department_name: "Phòng Hành chính - Nhân sự", manager_id: "4", description: "Tuyển dụng, chấm công, tính lương, ISO", status: "Active" },
-        { id: "DEPT-05", department_name: "Phòng Kế toán & Tài chính", manager_id: "5", description: "Thu chi, hóa đơn, thuế, báo cáo tài chính", status: "Active" },
-        { id: "DEPT-06", department_name: "Phòng Marketing & Truyền thông", manager_id: "6", description: "Nhận diện thương hiệu, khách hàng mới", status: "Active" },
-        { id: "DEPT-07", department_name: "Trung tâm Khách hàng & Call Center", manager_id: "7", description: "Tổng đài tư vấn 24/7 & CSKH", status: "Active" }
-      ];
-      for (const d of seedDepts) {
-        db.prepare("INSERT OR REPLACE INTO hr_departments (id, department_name, manager_id, description, status) VALUES (?, ?, ?, ?, ?)").run(d.id, d.department_name, d.manager_id, d.description, d.status);
-      }
-      return res.json({ success: true, data: seedDepts });
-    }
     res.json({ success: true, data: depts });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-router.post("/departments", auth, (req: any, res: any) => {
+router.post("/departments", requirePermission("manageUsers"), (req: any, res: any) => {
   try {
     const { department_name, manager_id, description } = req.body;
     const id = `DEPT-${Date.now()}`;
@@ -237,19 +203,6 @@ router.post("/departments", auth, (req: any, res: any) => {
 router.get("/positions", auth, (req: any, res: any) => {
   try {
     const positions = db.prepare("SELECT * FROM hr_positions").all();
-    if (positions.length === 0) {
-      const seedPositions = [
-        { id: "POS-01", position_name: "Giám đốc / Luật sư Điều hành", level: 5, salary_grade: "L5-S1", permission_group: "Director" },
-        { id: "POS-02", position_name: "Trưởng phòng / Luật sư Thành viên", level: 4, salary_grade: "L4-S2", permission_group: "Manager" },
-        { id: "POS-03", position_name: "Luật sư Chính / Senior Counsel", level: 3, salary_grade: "L3-S1", permission_group: "Lawyer" },
-        { id: "POS-04", position_name: "Chuyên viên Pháp lý / Associate", level: 2, salary_grade: "L2-S3", permission_group: "Staff" },
-        { id: "POS-05", position_name: "Thực tập sinh / Legal Intern", level: 1, salary_grade: "L1-S1", permission_group: "Intern" }
-      ];
-      for (const p of seedPositions) {
-        db.prepare("INSERT OR REPLACE INTO hr_positions (id, position_name, level, salary_grade, permission_group) VALUES (?, ?, ?, ?, ?)").run(p.id, p.position_name, p.level, p.salary_grade, p.permission_group);
-      }
-      return res.json({ success: true, data: seedPositions });
-    }
     res.json({ success: true, data: positions });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -262,19 +215,6 @@ router.get("/positions", auth, (req: any, res: any) => {
 router.get("/shifts", auth, (req: any, res: any) => {
   try {
     const shifts = db.prepare("SELECT * FROM hr_shifts").all();
-    if (shifts.length === 0) {
-      const seedShifts = [
-        { id: "SHIFT-01", shift_name: "Ca sáng Hành chính", start_time: "07:30", end_time: "11:30", break_time: "11:30-13:00", late_allowance: 15, early_allowance: 15, working_days: "Mon-Sat" },
-        { id: "SHIFT-02", shift_name: "Ca chiều Hành chính", start_time: "13:00", end_time: "17:00", break_time: "12:00-13:00", late_allowance: 15, early_allowance: 15, working_days: "Mon-Sat" },
-        { id: "SHIFT-03", shift_name: "Ca tối / Trực ban Tòa án", start_time: "17:00", end_time: "22:00", break_time: "19:00-19:30", late_allowance: 10, early_allowance: 10, working_days: "Mon-Fri" },
-        { id: "SHIFT-04", shift_name: "Ca linh hoạt (Flexible)", start_time: "08:30", end_time: "17:30", break_time: "12:00-13:00", late_allowance: 30, early_allowance: 30, working_days: "Mon-Fri" },
-        { id: "SHIFT-05", shift_name: "Ca Online / Tư vấn từ xa", start_time: "08:00", end_time: "20:00", break_time: "Linh hoạt", late_allowance: 30, early_allowance: 30, working_days: "All" }
-      ];
-      for (const s of seedShifts) {
-        db.prepare("INSERT OR REPLACE INTO hr_shifts (id, shift_name, start_time, end_time, break_time, late_allowance, early_allowance, working_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(s.id, s.shift_name, s.start_time, s.end_time, s.break_time, s.late_allowance, s.early_allowance, s.working_days);
-      }
-      return res.json({ success: true, data: seedShifts });
-    }
     res.json({ success: true, data: shifts });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -473,7 +413,7 @@ router.post("/leave", auth, (req: any, res: any) => {
   }
 });
 
-router.put("/leave/:id/approve", auth, (req: any, res: any) => {
+router.put("/leave/:id/approve", requirePermission("manageUsers"), (req: any, res: any) => {
   try {
     const { status, approved_by } = req.body;
     db.prepare("UPDATE hr_leave_requests SET status = ?, approved_by = ? WHERE id = ?").run(status || "Approved", approved_by || req.session.user?.name, req.params.id);
@@ -500,7 +440,7 @@ router.post("/business-trip", auth, (req: any, res: any) => {
     const { destination, start_date, end_date, budget, task_description } = req.body;
     const empId = String(req.session.user?.id || 1);
     const id = `TRIP-${Date.now()}`;
-    db.prepare("INSERT INTO hr_business_trips (id, employee_id, destination, start_date, end_date, budget, task_description, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(id, empId, destination, start_date, end_date, budget || 0, task_description || "", "Approved");
+    db.prepare("INSERT INTO hr_business_trips (id, employee_id, destination, start_date, end_date, budget, task_description, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(id, empId, destination, start_date, end_date, budget || 0, task_description || "", "Pending");
     res.json({ success: true, id });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -521,7 +461,7 @@ router.post("/overtime", auth, (req: any, res: any) => {
     const { date, ot_hours, multiplier, reason } = req.body;
     const empId = String(req.session.user?.id || 1);
     const id = `OT-${Date.now()}`;
-    db.prepare("INSERT INTO hr_overtimes (id, employee_id, date, ot_hours, multiplier, reason, status) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, empId, date || new Date().toISOString().split("T")[0], ot_hours || 2, multiplier || 1.5, reason || "Hồ sơ gấp", "Approved");
+    db.prepare("INSERT INTO hr_overtimes (id, employee_id, date, ot_hours, multiplier, reason, status) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, empId, date || new Date().toISOString().split("T")[0], ot_hours || 2, multiplier || 1.5, reason || "Hồ sơ gấp", "Pending");
     res.json({ success: true, id });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -534,8 +474,9 @@ router.post("/overtime", auth, (req: any, res: any) => {
 router.get("/payroll", auth, (req: any, res: any) => {
   try {
     const { month, year } = req.query;
-    const m = Number(month || 7);
-    const y = Number(year || 2026);
+    const now = new Date();
+    const m = Number(month || now.getMonth() + 1);
+    const y = Number(year || now.getFullYear());
 
     const rows = db.prepare(`
       SELECT p.*, u.name as employee_name, u.staff_code, u.title, u.branch
@@ -544,48 +485,6 @@ router.get("/payroll", auth, (req: any, res: any) => {
       WHERE p.month = ? AND p.year = ?
       ORDER BY u.id ASC
     `).all(m, y);
-
-    if (rows.length === 0) {
-      // Generate default payrolls from users table for this month
-      const users = db.prepare("SELECT * FROM users WHERE role != 'client'").all() as any[];
-      const generated = users.map((u: any) => {
-        const base = u.salary ? Number(String(u.salary).replace(/[^0-9]/g, '')) || 20000000 : 20000000;
-        const allowance = 1500000; // Food + Gas
-        const bonus = Number(u.bonus) || 2000000;
-        const ot_salary = 1200000;
-        const insurance = Math.round(base * 0.105); // 10.5% (BHXH 8%, BHYT 1.5%, BHTN 1%)
-        const taxable = Math.max(0, base + bonus + ot_salary - insurance - 11000000);
-        const tax = Math.round(taxable * 0.1);
-        const net = base + allowance + bonus + ot_salary - insurance - tax;
-
-        const id = `PAY-${u.id}-${m}-${y}`;
-        db.prepare(`
-          INSERT OR REPLACE INTO hr_payrolls (id, employee_id, month, year, base_salary, allowance, bonus, ot_salary, insurance, tax, net_salary, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(id, String(u.id), m, y, base, allowance, bonus, ot_salary, insurance, tax, net, "Approved");
-
-        return {
-          id,
-          employee_id: String(u.id),
-          employee_name: u.name,
-          staff_code: u.staff_code || `NV-${u.id}`,
-          title: u.title,
-          branch: u.branch,
-          month: m,
-          year: y,
-          base_salary: base,
-          allowance,
-          bonus,
-          ot_salary,
-          insurance,
-          tax,
-          net_salary: net,
-          status: "Approved"
-        };
-      });
-
-      return res.json({ success: true, data: generated });
-    }
 
     res.json({ success: true, data: rows });
   } catch (err: any) {
@@ -656,48 +555,11 @@ router.get("/kpi", auth, (req: any, res: any) => {
       SELECT p.*, u.name as employee_name, u.title, u.role
       FROM hr_performances p
       JOIN users u ON p.employee_id = CAST(u.id AS TEXT)
-      WHERE p.month = ? AND p.year = ?
+      WHERE p.month = ? AND p.year = ? AND LOWER(COALESCE(u.role, '')) <> 'admin' AND LOWER(COALESCE(u.username, '')) <> 'admin'
     `).all(m, y);
 
     if (kpis.length === 0) {
-      const users = db.prepare("SELECT * FROM users WHERE role != 'client'").all() as any[];
-      const seeded = users.map((u: any) => {
-        const id = `PERF-${u.id}-${m}-${y}`;
-        const isLawyer = String(u.role).includes("lawyer") || String(u.title).includes("Luật sư");
-        const billable = isLawyer ? 120 + Math.floor(Math.random() * 40) : 0;
-        const court = isLawyer ? 30 + Math.floor(Math.random() * 20) : 0;
-        const meetings = 25 + Math.floor(Math.random() * 15);
-
-        const kpi_score = 85 + Math.floor(Math.random() * 12);
-        const ai_score = 90 + Math.floor(Math.random() * 8);
-        const manager_score = 88 + Math.floor(Math.random() * 10);
-        const total = Math.round((kpi_score + ai_score + manager_score) / 3);
-        const rank = total >= 92 ? "A+" : total >= 85 ? "A" : "B";
-
-        db.prepare(`
-          INSERT OR REPLACE INTO hr_performances (id, employee_id, month, year, kpi_score, ai_score, manager_score, total_score, rank, billable_hours, non_billable_hours, court_time, client_meetings)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(id, String(u.id), m, y, kpi_score, ai_score, manager_score, total, rank, billable, 30, court, meetings);
-
-        return {
-          id,
-          employee_id: String(u.id),
-          employee_name: u.name,
-          title: u.title,
-          role: u.role,
-          month: m,
-          year: y,
-          kpi_score,
-          ai_score,
-          manager_score,
-          total_score: total,
-          rank,
-          billable_hours: billable,
-          court_time: court,
-          client_meetings: meetings
-        };
-      });
-      return res.json({ success: true, data: seeded });
+      return res.json({ success: true, data: [] });
     }
 
     res.json({ success: true, data: kpis });
@@ -748,7 +610,7 @@ router.post("/kpi/import", auth, async (req: any, res: any) => {
       SELECT p.*, u.name as employee_name, u.title, u.role
       FROM hr_performances p
       JOIN users u ON p.employee_id = CAST(u.id AS TEXT)
-      WHERE p.month = ? AND p.year = ?
+      WHERE p.month = ? AND p.year = ? AND LOWER(COALESCE(u.role, '')) <> 'admin' AND LOWER(COALESCE(u.username, '')) <> 'admin'
     `).all(m, y);
 
     res.json({ success: true, data: updatedKpis });

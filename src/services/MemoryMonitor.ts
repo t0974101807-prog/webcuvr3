@@ -57,7 +57,7 @@ export class MemoryMonitor {
   private static warningPercent = parseInt(process.env.MEMORY_WARNING_PERCENT || "70", 10);
   private static criticalPercent = parseInt(process.env.MEMORY_CRITICAL_PERCENT || "85", 10);
   private static oomPercent = parseInt(process.env.MEMORY_OOM_PERCENT || "95", 10);
-  private static intervalMs = parseInt(process.env.MEMORY_MONITOR_INTERVAL_MS || "5000", 10);
+  private static intervalMs = parseInt(process.env.MEMORY_MONITOR_INTERVAL_MS || "60000", 10);
   private static bufferSize = parseInt(process.env.MEMORY_STATE_BUFFER_SIZE || "500", 10);
 
   // Leak trend history

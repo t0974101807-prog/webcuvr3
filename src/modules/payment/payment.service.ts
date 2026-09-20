@@ -2,7 +2,7 @@ import { paymentRepository, PaymentRecord, PaymentScheduleRecord, ReceiptRecord 
 import { paymentScheduleEngine } from "./payment.schedule";
 import { qrEngine } from "./payment.qr";
 import { paymentEventBus, PaymentEventType } from "./payment.event";
-import db from "../../db/database";
+import { SystemDataAccess } from "../../system/data-access/SystemDataAccess";
 
 export class PaymentService {
   /**
@@ -82,9 +82,8 @@ export class PaymentService {
     const caseId = paymentRepository.findCaseByQrToken(token);
     if (!caseId) {
       // Fallback: try looking up case directly by token or systemId
-      const erpRow = db.prepare("SELECT data FROM erp_records WHERE id = ? OR data LIKE ?").get(token, `%${token}%`) as any;
-      if (erpRow) {
-        const parsed = JSON.parse(erpRow.data);
+      const parsed = SystemDataAccess.findRecordByToken(token);
+      if (parsed) {
         return {
           found: true,
           caseDetails: parsed,
@@ -94,8 +93,7 @@ export class PaymentService {
       return { found: false, message: "Mã QR không tồn tại hoặc đã hết hạn" };
     }
 
-    const erpRow = db.prepare("SELECT data FROM erp_records WHERE id = ?").get(caseId) as any;
-    const caseDetails = erpRow ? JSON.parse(erpRow.data) : { id: caseId, title: "Hồ sơ vụ việc" };
+    const caseDetails = SystemDataAccess.getRecordById(caseId) || { id: caseId, title: "Hồ sơ vụ việc" };
     const paymentEval = qrEngine.evaluateCaseQrScan(caseId, baseUrl);
 
     // Event log

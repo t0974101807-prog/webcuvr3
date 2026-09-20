@@ -103,7 +103,7 @@ export default function ExecutiveDashboard({
   const [allSystemRecords, setAllSystemRecords] = useState<any[]>(() => records || []);
 
   useEffect(() => {
-    if (records && records.length > 0) {
+    if (records) {
       setAllSystemRecords(records);
     }
   }, [records]);
@@ -920,7 +920,7 @@ export default function ExecutiveDashboard({
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [aiChatHistory]);
 
-  // Aggregate Data from real records & fallbacks
+  // Aggregate dashboard metrics from synchronized records and finance/KPI APIs.
   const computedData = useMemo(() => {
     const isCompletedStatus = (status: string) => {
       if (!status) return false;
@@ -946,18 +946,18 @@ export default function ExecutiveDashboard({
       // Determine real lawyer name from system users list if not explicitly assigned
       const defaultRealLawyer = (users && users.length > 0)
         ? (users.find((u: any) => u.role?.toLowerCase().includes("luật sư") || u.role?.toLowerCase().includes("lawyer"))?.name || users[0]?.name)
-        : (user?.name || "Luật sư Nguyễn Văn A");
+        : "Chưa phân công";
 
       return {
         id: (r && r.id) || (dataObj && (dataObj.id || dataObj.dossierId)) || "Unknown",
-        clientName: (dataObj && (dataObj.clientName || dataObj.client)) || (r && r.client) || "Khách hàng hệ thống",
+        clientName: (dataObj && (dataObj.clientName || dataObj.client)) || (r && r.client) || "Chưa cập nhật",
         lawyerName: (dataObj && (dataObj.assigneeName || dataObj.lawyer || dataObj.mainAssignee)) || (r && (r.mainAssignee || r.assigneeName)) || defaultRealLawyer,
         status: status,
-        category: (dataObj && (dataObj.category || dataObj.serviceType)) || (r && r.category) || "Tư vấn",
+        category: (dataObj && (dataObj.category || dataObj.serviceType)) || (r && r.category) || "Chưa phân loại",
         revenue: Number(dataObj && dataObj.feeAmount ? String(dataObj.feeAmount).replace(/,/g, "") : ((dataObj && (dataObj.revenue || dataObj.totalFee || dataObj.contractValue)) || 0)),
         debt: Number(dataObj ? (dataObj.remainingFee !== undefined ? dataObj.remainingFee : (dataObj.debt !== undefined ? dataObj.debt : 0)) : 0),
-        branch: (dataObj && dataObj.branch) || (r && r.branch) || "Hà Nội",
-        createdAt: (dataObj && (dataObj.created_at || dataObj.date)) || "2026-01-10",
+        branch: (dataObj && dataObj.branch) || (r && r.branch) || "Chưa phân chi nhánh",
+        createdAt: (dataObj && (dataObj.created_at || dataObj.date)) || "",
         stages: (dataObj && dataObj.stages) || []
       };
     });
@@ -976,19 +976,20 @@ export default function ExecutiveDashboard({
 
     // Overview KPIs
     const totalRecordsRevenue = filtered.reduce((sum, r) => sum + r.revenue, 0);
-    const totalRevenue = finPerf && finPerf.revenue > 0 ? finPerf.revenue : totalRecordsRevenue;
+    const totalRevenue = finPerf ? Number(finPerf.revenue || 0) : totalRecordsRevenue;
     const totalDebt = finDebts !== null ? finDebts : filtered.reduce((sum, r) => sum + r.debt, 0);
     const activeCases = filtered.filter(r => !isCompletedStatus(r.status)).length;
     const completedCases = filtered.filter(r => isCompletedStatus(r.status)).length;
     
     // Average KPI calculation from real users in DB
-    const avgKpi = users.length > 0 
-      ? Math.round(users.reduce((sum, u) => sum + (Number(u.kpi || u.performance || 80)), 0) / users.length)
-      : 0;
+    const usersWithKpi = users.filter((u: any) => u.kpi !== undefined || u.performance !== undefined);
+    const avgKpi = usersWithKpi.length > 0
+      ? Math.round(usersWithKpi.reduce((sum, u) => sum + Number(u.kpi ?? u.performance ?? 0), 0) / usersWithKpi.length)
+      : null;
 
     // Timeline Revenue Aggregation
     const parseDate = (dateStr: string) => {
-      if (!dateStr) return { month: 1, year: 2026 };
+      if (!dateStr) return { month: 0, year: 0 };
       if (dateStr.includes("/")) {
         const parts = dateStr.split("/");
         if (parts.length === 3) {
@@ -1004,7 +1005,7 @@ export default function ExecutiveDashboard({
           }
         }
       }
-      return { month: 1, year: 2026 };
+      return { month: 0, year: 0 };
     };
 
     const monthlyDataMap: Record<number, { revenue: number; cost: number }> = {};
@@ -1017,8 +1018,6 @@ export default function ExecutiveDashboard({
       const { month } = parseDate(dateStr);
       if (month >= 1 && month <= 12) {
         monthlyDataMap[month].revenue += r.revenue;
-        // Operational cost is around 35% of revenue plus 15,000,000 VND
-        monthlyDataMap[month].cost += (r.revenue * 0.35 + 15000000);
       }
     });
 
@@ -1032,7 +1031,7 @@ export default function ExecutiveDashboard({
         name: `Tháng ${monthNum}`,
         "Doanh thu": revMillion,
         "Chi phí": costMillion,
-        "KPI TB": avgKpi
+        "KPI TB": avgKpi ?? 0
       };
     }).slice(0, 6);
 
@@ -1095,7 +1094,7 @@ export default function ExecutiveDashboard({
       lawyerCaseload,
       usersList: users
     };
-  }, [allSystemRecords, users, filterBranch, filterDomain, filterTime]);
+  }, [allSystemRecords, users, user, filterBranch, filterDomain, filterTime, finPerf, finDebts]);
 
   const combinedCalendarEvents = useMemo(() => {
     const list = [...(events || [])];
@@ -1586,8 +1585,8 @@ export default function ExecutiveDashboard({
                         </h2>
                         <span className="text-[10px] text-slate-500 font-bold">VNĐ</span>
                       </div>
-                      <p className="text-[10px] text-emerald-400 font-bold flex items-center gap-1 mt-1">
-                        <TrendingUp size={12} /> +18.4% so với quý trước
+                      <p className="text-[10px] text-slate-500 font-bold flex items-center gap-1 mt-1">
+                        <Database size={12} /> Tổng hợp từ dữ liệu tài chính thực tế
                       </p>
                     </div>
 
@@ -1598,12 +1597,12 @@ export default function ExecutiveDashboard({
                       <p className="font-serif text-[10px] font-extrabold text-slate-500 uppercase tracking-widest">KPI Trung Bình Nhân Sự</p>
                       <div className="flex items-baseline gap-2 mt-2">
                         <h2 className="text-2xl font-black text-emerald-500 tracking-tight font-mono">
-                          {computedData.avgKpi}
+                          {computedData.avgKpi === null ? "--" : computedData.avgKpi}
                         </h2>
                         <span className="text-[10px] text-slate-500 font-bold">Điểm / 100</span>
                       </div>
-                      <p className="text-[10px] text-emerald-400 font-bold flex items-center gap-1 mt-1">
-                        <TrendingUp size={12} /> +2.5% cải thiện hiệu suất
+                      <p className="text-[10px] text-slate-500 font-bold flex items-center gap-1 mt-1">
+                        <Users size={12} /> {computedData.avgKpi === null ? "Chưa có KPI được ghi nhận" : "Tính từ KPI đã ghi nhận"}
                       </p>
                     </div>
 
@@ -1618,8 +1617,8 @@ export default function ExecutiveDashboard({
                         </h2>
                         <span className="text-[10px] text-slate-500 font-bold">Hồ sơ active</span>
                       </div>
-                      <p className="text-[10px] text-amber-500 font-bold flex items-center gap-1 mt-1">
-                        <Clock size={12} /> 4 hồ sơ sắp tới hạn SLA
+                      <p className="text-[10px] text-slate-500 font-bold flex items-center gap-1 mt-1">
+                        <Clock size={12} /> Theo dõi từ lịch và hạn hồ sơ đã ghi nhận
                       </p>
                     </div>
 
@@ -3074,25 +3073,25 @@ export default function ExecutiveDashboard({
                       <p className="text-[10px] font-bold text-slate-500 uppercase">Tổng Doanh Thu Thực Tế</p>
                       <h2 className="text-xl font-black text-amber-600 font-mono">{computedData.totalRevenue.toLocaleString("vi-VN")} VNĐ</h2>
                       <div className="h-2 w-full bg-slate-200 rounded-full mt-2 overflow-hidden">
-                        <div className="h-full bg-amber-500 rounded-full w-[75%]" />
+                        <div className="h-full bg-amber-500 rounded-full" style={{ width: computedData.totalRevenue > 0 ? "100%" : "0%" }} />
                       </div>
-                      <p className="text-[9px] text-slate-500 mt-1">Đã giải ngân thực tế: {Math.round(computedData.totalRevenue * 0.75).toLocaleString("vi-VN")} VNĐ (75%)</p>
+                      <p className="text-[9px] text-slate-500 mt-1">Chi phí đã ghi nhận: {Number(finPerf?.expense || 0).toLocaleString("vi-VN")} VNĐ</p>
                     </div>
 
                     <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-md flex flex-col gap-2">
                       <p className="text-[10px] font-bold text-slate-500 uppercase">Chi Phí Vận Hành Ước Tính</p>
-                      <h2 className="text-xl font-black text-slate-800 font-mono">{Math.round(computedData.totalRevenue * 0.35).toLocaleString("vi-VN")} VNĐ</h2>
+                      <h2 className="text-xl font-black text-slate-800 font-mono">{Number(finPerf?.expense || 0).toLocaleString("vi-VN")} VNĐ</h2>
                       <div className="h-2 w-full bg-slate-200 rounded-full mt-2 overflow-hidden">
-                        <div className="h-full bg-slate-500 rounded-full w-[35%]" />
+                        <div className="h-full bg-slate-500 rounded-full" style={{ width: `${computedData.totalRevenue > 0 ? Math.min(100, (Number(finPerf?.expense || 0) / computedData.totalRevenue) * 100) : 0}%` }} />
                       </div>
-                      <p className="text-[9px] text-slate-500 mt-1">Tỷ lệ chi phí/doanh thu đạt mức an toàn (35%)</p>
+                      <p className="text-[9px] text-slate-500 mt-1">Tỷ lệ thực tế: {computedData.totalRevenue > 0 ? Math.round((Number(finPerf?.expense || 0) / computedData.totalRevenue) * 100) : 0}%</p>
                     </div>
 
                     <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-md flex flex-col gap-2">
                       <p className="text-[10px] font-bold text-slate-500 uppercase">Nợ Cần Thu Hồi / Đôn Đốc</p>
                       <h2 className="text-xl font-black text-rose-600 font-mono">{computedData.totalDebt.toLocaleString("vi-VN")} VNĐ</h2>
                       <div className="h-2 w-full bg-slate-200 rounded-full mt-2 overflow-hidden">
-                        <div className="h-full bg-rose-500 rounded-full w-[25%]" />
+                        <div className="h-full bg-rose-500 rounded-full" style={{ width: `${computedData.totalRevenue > 0 ? Math.min(100, (computedData.totalDebt / computedData.totalRevenue) * 100) : 0}%` }} />
                       </div>
                       <p className="text-[9px] text-slate-500 mt-1">Cảnh báo hệ thống: Đã ghi nhận công nợ đọng từ hồ sơ chưa hoàn thành.</p>
                     </div>

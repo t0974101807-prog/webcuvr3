@@ -1,4 +1,6 @@
 import { paymentEventBus, PaymentEventType } from "./payment.event";
+import crypto from "crypto";
+import { config } from "../../config/env";
 
 export interface IncomingBankTransaction {
   transactionId: string;
@@ -19,6 +21,22 @@ export interface BankConnectorInterface {
 }
 
 export class BankingGateway implements BankConnectorInterface {
+  public verifySignature(payload: unknown, signature?: string): boolean {
+    if (!config.BANK_WEBHOOK_SECRET) return false;
+    if (!signature) return false;
+    const rawPayload = typeof payload === "string" ? payload : JSON.stringify(payload);
+    const expected = crypto.createHmac("sha256", config.BANK_WEBHOOK_SECRET).update(rawPayload).digest("hex");
+    try {
+      return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature.trim().toLowerCase()));
+    } catch {
+      return false;
+    }
+  }
+
+  public isConfigured() {
+    return Boolean(config.BANK_WEBHOOK_SECRET && config.BANK_ACCOUNT_NUMBER);
+  }
+
   public async receiveTransaction(tx: IncomingBankTransaction): Promise<{ success: boolean; message: string; transactionId: string }> {
     console.log(`[BankingGateway] Received transaction: ID=${tx.transactionId}, Ref=${tx.transferContent}, Amount=${tx.amount}`);
 
@@ -57,8 +75,8 @@ export class BankingGateway implements BankConnectorInterface {
 
   public async getBalance(): Promise<{ accountNumber: string; balance: number; currency: string }> {
     return {
-      accountNumber: "0383111222",
-      balance: 1580000000,
+      accountNumber: config.BANK_ACCOUNT_NUMBER,
+      balance: 0,
       currency: "VND"
     };
   }

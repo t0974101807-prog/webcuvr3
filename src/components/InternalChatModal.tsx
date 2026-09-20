@@ -3,6 +3,7 @@ import { MessageSquare, X, Paperclip, Send } from "lucide-react";
 import { io, Socket } from "socket.io-client";
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { fetchApi } from "../utils/api";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -89,7 +90,7 @@ export default function InternalChatModal({ record, user, onClose, language = "v
     formData.append("file", file);
 
     try {
-      const res = await fetch("/api/live-upload", { method: "POST", body: formData });
+      const res = await fetchApi("/api/secure-upload", { method: "POST", body: formData });
       const data = await res.json();
 
       if (data.url) {

@@ -1,5 +1,3 @@
-import { doc, setDoc } from "firebase/firestore";
-import { db } from "../firebase";
 import { fetchApi } from "../utils/api";
 
 export interface SyncItem {
@@ -185,54 +183,27 @@ class BackgroundSyncService {
       let success = false;
       try {
         if (item.type === "call_log") {
-          // Offload call log to both backend SQLite API and Firestore
-          const tasks: Promise<any>[] = [
-            // 1. Backend API
-            fetchApi("/api/calls", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(item.payload)
-            })
-          ];
-          // 2. Firestore Document Sync (if available)
-          if (db && !(db as any).isMock) {
-            tasks.push(setDoc(doc(db, "voip_calls", item.payload.id), item.payload));
-          }
-          await Promise.all(tasks);
+          await fetchApi("/api/calls", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(item.payload)
+          });
           success = true;
 
         } else if (item.type === "system_metric") {
-          // Offload system metrics
-          const tasks: Promise<any>[] = [
-            // 1. Backend API
-            fetchApi("/api/system/metrics", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(item.payload)
-            })
-          ];
-          // 2. Firestore Document Sync (if available)
-          if (db && !(db as any).isMock) {
-            tasks.push(setDoc(doc(db, "system_performance_metrics", item.payload.id), item.payload));
-          }
-          await Promise.all(tasks);
+          await fetchApi("/api/system/metrics", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(item.payload)
+          });
           success = true;
 
         } else if (item.type === "qa_evaluation") {
-          // Offload quality evaluation
-          const tasks: Promise<any>[] = [
-            // 1. Backend API
-            fetchApi("/api/system/qa-evaluation", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(item.payload)
-            })
-          ];
-          // 2. Firestore Document Sync (if available)
-          if (db && !(db as any).isMock) {
-            tasks.push(setDoc(doc(db, "quality_assurance_evaluations", item.payload.id), item.payload));
-          }
-          await Promise.all(tasks);
+          await fetchApi("/api/system/qa-evaluation", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(item.payload)
+          });
           success = true;
         }
       } catch (err) {

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requirePermission } from "../../middleware/auth";
+import { auth, requirePermission } from "../../middleware/auth";
 import db from "../../db/database";
 import { syncRowToFirestore, deleteFromFirestore } from "../../db/firestore-sync";
 import { SharedDirectoryService } from "../../application/services/sharedDirectory.service";
@@ -502,11 +502,10 @@ router.post("/offices", canEditWeb, async (req: any, res: any) => {
   try {
     // If setting this one as headquarters, unset any other
     if (is_headquarters) {
-      db.prepare(`UPDATE offices SET is_headquarters = 0`).run();
+      SharedDirectoryService.clearHeadquarters();
     }
-    const result = db.prepare(`INSERT INTO offices (name, short_name, region, address, phone, email, map_url, is_headquarters, latitude, longitude) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(val(name), val(short_name), val(region), val(address), val(phone), val(email), val(map_url), is_headquarters ? 1 : 0, val(latitude), val(longitude));
-    await syncRowToFirestore("offices", Number(result.lastInsertRowid));
+    const officeId = SharedDirectoryService.createOffice({ name: val(name), short_name: val(short_name), region: val(region), address: val(address), phone: val(phone), email: val(email), map_url: val(map_url), is_headquarters, latitude: val(latitude), longitude: val(longitude) });
+    await syncRowToFirestore("offices", officeId);
     try {
       const io = req.app.get("io");
       if (io) {
@@ -525,10 +524,9 @@ router.put("/offices/:id", canEditWeb, async (req: any, res: any) => {
   try {
     // If setting this one as headquarters, unset any other
     if (is_headquarters) {
-      db.prepare(`UPDATE offices SET is_headquarters = 0 WHERE id != ?`).run(req.params.id);
+      SharedDirectoryService.clearHeadquarters(req.params.id);
     }
-    db.prepare(`UPDATE offices SET name=?, short_name=?, region=?, address=?, phone=?, email=?, map_url=?, is_headquarters=?, latitude=?, longitude=? WHERE id=?`)
-      .run(val(name), val(short_name), val(region), val(address), val(phone), val(email), val(map_url), is_headquarters ? 1 : 0, val(latitude), val(longitude), req.params.id);
+    SharedDirectoryService.updateOffice(req.params.id, { name: val(name), short_name: val(short_name), region: val(region), address: val(address), phone: val(phone), email: val(email), map_url: val(map_url), is_headquarters, latitude: val(latitude), longitude: val(longitude) });
     await syncRowToFirestore("offices", req.params.id);
     try {
       const io = req.app.get("io");
@@ -545,7 +543,7 @@ router.put("/offices/:id", canEditWeb, async (req: any, res: any) => {
 
 router.delete("/offices/:id", canEditWeb, async (req: any, res: any) => {
   try {
-    db.prepare(`DELETE FROM offices WHERE id=?`).run(req.params.id);
+    SharedDirectoryService.deleteOffice(req.params.id);
     await deleteFromFirestore("offices", req.params.id);
     try {
       const io = req.app.get("io");
@@ -1679,13 +1677,7 @@ router.post("/attendance/check-in", (req: any, res: any) => {
 router.post("/attendance/bulk", (req: any, res: any) => {
   const { date, role, status, checkInTime } = req.body;
   try {
-    let usersQuery = "SELECT id, username, name, role, staff_code FROM users";
-    const params: any[] = [];
-    if (role && role !== "All") {
-      usersQuery += " WHERE role = ?";
-      params.push(role);
-    }
-    const targetUsers = db.prepare(usersQuery).all(params) as any[];
+    const targetUsers = SharedDirectoryService.listAttendanceTargets(role);
     
     for (const u of targetUsers) {
       const existing = db.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ?").get(u.id, date) as any;
@@ -1717,8 +1709,17 @@ router.post("/attendance/approve-late", (req: any, res: any) => {
 });
 
 // GET Report Unlock Requests
-router.get("/unlock-requests", (req: any, res: any) => {
+router.get("/unlock-requests", auth, (req: any, res: any) => {
   try {
+    const user = req.user || req.session?.user;
+    const role = String(user?.role || "").toLowerCase();
+    const adminLike = ["admin", "director", "deputy_director", "deputydirector", "controller", "kiểm soát viên", "kiểm soát chất lượng"].includes(role);
+    const canViewReports = !!(user && (adminLike || role === "manager" || role === "head_of_department" || role === "prosecutor" || role === "lawyer" || role === "legal_associate"));
+
+    if (!canViewReports && !adminLike) {
+      return res.status(403).json({ success: false, error: "Bạn không có quyền xem yêu cầu mở báo cáo." });
+    }
+
     const rows = db.prepare("SELECT * FROM report_unlock_requests ORDER BY id DESC").all();
     res.json(rows);
   } catch (err: any) {
@@ -1727,7 +1728,7 @@ router.get("/unlock-requests", (req: any, res: any) => {
 });
 
 // POST Create Unlock Request
-router.post("/unlock-requests/create", (req: any, res: any) => {
+router.post("/unlock-requests/create", auth, (req: any, res: any) => {
   const { dossierId, clientName, staffName, eventTitle, eventDate, reason } = req.body;
   const createdAt = new Date().toISOString();
   try {
@@ -1746,9 +1747,16 @@ router.post("/unlock-requests/create", (req: any, res: any) => {
 });
 
 // POST Approve/Reject Unlock Request
-router.post("/unlock-requests/approve", (req: any, res: any) => {
+router.post("/unlock-requests/approve", auth, (req: any, res: any) => {
   const { id, approve } = req.body;
   try {
+    const user = req.user || req.session?.user;
+    const role = String(user?.role || "").toLowerCase();
+    const adminLike = ["admin", "director", "deputy_director", "deputydirector", "controller", "kiểm soát viên", "kiểm soát chất lượng"].includes(role);
+    if (!adminLike && role !== "manager" && role !== "head_of_department") {
+      return res.status(403).json({ success: false, error: "Bạn không có quyền phê duyệt yêu cầu mở báo cáo." });
+    }
+
     const status = approve ? "approved" : "rejected";
     db.prepare("UPDATE report_unlock_requests SET status = ? WHERE id = ?").run(status, id);
     

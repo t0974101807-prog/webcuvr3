@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import HrDashboard from "./HrDashboard";
 import UnderstandAnything from "./UnderstandAnything";
 import LegalOSUltimate from "./LegalOSUltimate";
@@ -15,6 +15,7 @@ import {
   PieChart, Pie, Cell, BarChart, Bar, Legend, RadialBarChart, RadialBar
 } from 'recharts';
 import { fetchApi } from "../utils/api";
+import { filterNonAdminPersonnel } from "../utils/personnelFilters";
 
 export default function SecurityView({
   language = "vi",
@@ -113,7 +114,7 @@ export default function SecurityView({
     }
     setIsResetting(true);
     try {
-      const res = await fetch("/api/system/reset-mock-data", {
+      const res = await fetchApi("/api/system/reset-mock-data", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -174,6 +175,7 @@ export default function SecurityView({
     { id: 7, name: "Chi nhánh Vũng Tàu", short_name: "Vũng Tàu" },
     { id: 8, name: "Chi nhánh Hải Phòng", short_name: "Hải Phòng" }
   ]);
+  const officesFetchAttemptedRef = useRef(false);
 
   useEffect(() => {
     if (offices && offices.length > 0) {
@@ -182,22 +184,20 @@ export default function SecurityView({
   }, [offices]);
 
   useEffect(() => {
-    if (!offices || offices.length === 0) {
-      fetchApi("/api/offices")
-        .then((res) => res.json())
-        .then((data) => {
-          if (Array.isArray(data) && data.length > 0) {
-            setOfficesList(data);
-          }
-        })
-        .catch(() => {});
-    }
+    if (offices && offices.length > 0) return;
+    if (officesFetchAttemptedRef.current) return;
+
+    officesFetchAttemptedRef.current = true;
+    fetchApi("/api/offices")
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setOfficesList(data);
+        }
+      })
+      .catch(() => {});
   }, [offices]);
-  const [pendingApprovals, setPendingApprovals] = useState([
-    { id: 101, title: "Hợp đồng Tư vấn M&A Tập đoàn Vinaconex - Phí 450tr VNĐ", requester: "Luật sư Nguyễn Văn A", branch: "Hà Nội", amount: "450.000.000 VNĐ", urgency: "Cao", date: "Hôm nay, 09:15" },
-    { id: 102, title: "Đề xuất Tạm ứng Án phí Vụ tranh chấp Đất đai #DS-882", requester: "Luật sư Trần Thị B", branch: "TP.HCM", amount: "35.000.000 VNĐ", urgency: "Trung bình", date: "Hôm nay, 10:30" },
-    { id: 103, title: "Báo cáo Chiến lược Tranh tụng Phiên phúc thẩm #HS-112", requester: "Luật sư Lê Hoàng C", branch: "Hà Nội", amount: "Miễn phí", urgency: "Khẩn cấp", date: "Hôm qua, 16:45" },
-  ]);
+  const [pendingApprovals, setPendingApprovals] = useState<any[]>([]);
 
   const showToast = (msg: string) => {
     setNotificationToast(msg);
@@ -217,9 +217,9 @@ export default function SecurityView({
             ...prev,
             {
               time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-              cpu: json.data.cpuUsage || Math.floor(Math.random() * 25) + 15,
-              ram: json.data.memoryUsage || Math.floor(Math.random() * 15) + 40,
-              network: json.data.networkIn || Math.floor(Math.random() * 80) + 20
+              cpu: Number(json.data.cpuUsage ?? 0),
+              ram: Number(json.data.memoryUsage ?? 0),
+              network: Number(json.data.networkIn ?? 0)
             }
           ];
           if (newHistory.length > 20) newHistory.shift();
@@ -227,19 +227,7 @@ export default function SecurityView({
         });
       }
     } catch (e) {
-      // Fallback telemetry generator for smooth continuous UI animation
-      const nowTime = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      setCpuHistory(prev => {
-        const mockItem = {
-          time: nowTime,
-          cpu: Math.floor(Math.random() * 18) + 12,
-          ram: Math.floor(Math.random() * 10) + 48,
-          network: Math.floor(Math.random() * 60) + 40
-        };
-        const updated = [...prev, mockItem];
-        if (updated.length > 20) updated.shift();
-        return updated;
-      });
+      setCpuHistory([]);
     } finally {
       setTimeout(() => setIsRefreshing(false), 300);
     }
@@ -372,21 +360,8 @@ export default function SecurityView({
     }
   }, [activeTab, refreshInterval]);
 
-  // Seed initial chart points if empty
-  useEffect(() => {
-    if (cpuHistory.length === 0) {
-      const seed = Array.from({ length: 12 }).map((_, i) => ({
-        time: `${10 + i}:00`,
-        cpu: Math.floor(Math.random() * 25) + 15,
-        ram: Math.floor(Math.random() * 15) + 45,
-        network: Math.floor(Math.random() * 70) + 30
-      }));
-      setCpuHistory(seed);
-    }
-  }, []);
-
   const formatUptime = (seconds: number) => {
-    if (!seconds) return "21m 20s";
+    if (!seconds) return "Chưa có dữ liệu";
     const d = Math.floor(seconds / (3600 * 24));
     const h = Math.floor(seconds % (3600 * 24) / 3600);
     const m = Math.floor(seconds % 3600 / 60);
@@ -471,9 +446,8 @@ export default function SecurityView({
   const totalUsersCount = filteredUsers.length;
 
   // Real user list for HR and audit attribution (only personnel/staff/admin, excluding clients)
-  const staffUsersOnly = filteredUsers.filter((u: any) => u.role !== 'client');
-  const realUserNames = staffUsersOnly.length > 0
-    ? staffUsersOnly.map((u: any) => ({
+  const staffUsersOnly = filterNonAdminPersonnel(filteredUsers.filter((u: any) => u.role !== 'client'));
+  const realUserNames = staffUsersOnly.map((u: any) => ({
         id: u.id,
         name: u.name || u.username,
         username: u.username,
@@ -481,27 +455,14 @@ export default function SecurityView({
         title: typeof u.title === 'string' ? u.title : ((u.role === 'admin' || u.username === 'admin') ? "" : 'Chuyên viên Pháp lý'),
         staff_code: u.staff_code || `NV${String(u.id || 1).padStart(3, '0')}`,
         branch: u.branch || 'Trụ sở chính'
-      }))
-    : [
-        { id: 1, name: "Quản trị viên", username: "admin", role: "admin", title: "", staff_code: "QTV001", branch: "Trụ sở chính" }
-      ];
+      }));
 
   // Comprehensive Enriched Staff Personnel dataset for HR & KPI Center (Image 2 & 3 sync)
   const enrichedStaff = useMemo(() => {
-    const defaultList = [
-      { id: 1, name: "Quản trị viên", username: "admin", role: "admin", title: "", staff_code: "QTV001", branch: "Trụ sở chính", department: "Ban Giám đốc", age: 48, birth_year: 1978, join_date: "10/01/2018", exit_date: null, contract_type: "HĐ KXD Thời hạn", status: "Đang làm việc", salary: 0 },
-      { id: 2, name: "Nguyễn Thị Mai", username: "mainguyen", role: "lawyer", title: "Luật sư Cao cấp (Senior Partner)", staff_code: "NS-002", branch: "Chi nhánh Hà Nội", department: "Khối Tố tụng & Dân sự", age: 42, birth_year: 1984, join_date: "15/03/2020", exit_date: null, contract_type: "HĐ KXD Thời hạn", status: "Đang làm việc", salary: 65000000 },
-      { id: 3, name: "Lê Hoàng Cường", username: "cuongle", role: "lawyer", title: "Luật sư Tranh tụng (Senior Associate)", staff_code: "NS-003", branch: "Chi nhánh TP.HCM", department: "Khối Tố tụng & Dân sự", age: 35, birth_year: 1991, join_date: "01/06/2022", exit_date: null, contract_type: "HĐ LĐ 36 tháng", status: "Đang làm việc", salary: 42000000 },
-      { id: 4, name: "Phạm Minh Dung", username: "dungpham", role: "staff", title: "Chuyên viên Pháp lý Doanh nghiệp", staff_code: "NS-004", branch: "Chi nhánh Hà Nội", department: "Khối Doanh nghiệp & M&A", age: 28, birth_year: 1998, join_date: "12/09/2023", exit_date: null, contract_type: "HĐ LĐ 12 tháng", status: "Đang làm việc", salary: 25000000 },
-      { id: 5, name: "Hoàng Đức Anh", username: "anhhoang", role: "lawyer", title: "Luật sư Đất đai & BĐS", staff_code: "NS-005", branch: "Chi nhánh Đăng Nẵng", department: "Khối Đất đai & BĐS", age: 39, birth_year: 1987, join_date: "20/02/2021", exit_date: null, contract_type: "HĐ KXD Thời hạn", status: "Đang làm việc", salary: 48000000 },
-      { id: 6, name: "Ngô Thu Thủy", username: "thuyngo", role: "staff", title: "Trợ lý Legal & Hồ sơ Tòa án", staff_code: "NS-006", branch: "Trụ sở chính", department: "Khối Hành chính & HR", age: 25, birth_year: 2001, join_date: "05/11/2024", exit_date: null, contract_type: "HĐ Tập sự", status: "Đang làm việc", salary: 18000000 },
-      { id: 7, name: "Đặng Văn Lâm", username: "lamdang", role: "lawyer", title: "Luật sư Tư vấn Thuế & Lao động", staff_code: "NS-007", branch: "Chi nhánh TP.HCM", department: "Khối Tài chính & Thuế", age: 52, birth_year: 1974, join_date: "10/05/2019", exit_date: "15/05/2026", contract_type: "HĐ KXD Thời hạn", status: "Đã chuyển công tác", salary: 55000000 }
-    ];
-
-    const source = staffUsersOnly.length > 0 ? staffUsersOnly : defaultList;
+    const source = staffUsersOnly;
 
     return source.map((u: any, idx: number) => {
-      const ageNum = u.age || (26 + (idx * 6) % 27);
+      const ageNum = u.age || 0;
       let ageGrp = "30 - 45 tuổi (Nòng cốt)";
       if (ageNum < 30) ageGrp = "< 30 tuổi (Trẻ / Tập sự)";
       else if (ageNum > 45) ageGrp = "> 45 tuổi (Giàu kinh nghiệm)";
@@ -522,11 +483,11 @@ export default function SecurityView({
         )
       );
 
-      const status = u.status || (idx === 6 ? 'Đã chuyển công tác' : idx === 5 ? 'Thử việc / Tập sự' : 'Đang làm việc');
-      const joinDate = formatDateToVi(u.start_date || u.join_date || "") || (u.created_at ? new Date(u.created_at).toLocaleDateString('vi-VN') : `15/0${(idx % 8) + 1}/202${2 + (idx % 3)}`);
-      const exitDate = status === 'Đã chuyển công tác' ? (u.exit_date || "15/05/2026") : "— Đang công tác";
-      const contract = u.contract_type || (ageNum < 26 ? "HĐ Tập sự" : ageNum < 32 ? "HĐ LĐ 12-36 tháng" : "HĐ KXD Thời hạn");
-      const salary = u.salary ? Number(String(u.salary).replace(/[^0-9]/g, '')) : (u.gross ? Number(u.gross) : 22000000 + ageNum * 1200000);
+      const status = u.status || "Chưa cập nhật";
+      const joinDate = formatDateToVi(u.start_date || u.join_date || "") || (u.created_at ? new Date(u.created_at).toLocaleDateString('vi-VN') : "");
+      const exitDate = u.exit_date || "";
+      const contract = u.contract_type || "";
+      const salary = u.salary ? Number(String(u.salary).replace(/[^0-9]/g, '')) : (u.gross ? Number(u.gross) : 0);
 
       return {
         id: u.id || idx + 1,
@@ -536,7 +497,7 @@ export default function SecurityView({
         staff_code: u.staff_code || `NS-${String(idx + 1).padStart(3, '0')}`,
         title,
         department: dept,
-        branch: u.branch || (idx % 2 === 0 ? "Trụ sở chính" : "Chi nhánh Hà Nội"),
+        branch: u.branch || "Chưa cập nhật",
         join_date: joinDate,
         exit_date: exitDate,
         age: ageNum,
@@ -588,33 +549,29 @@ export default function SecurityView({
     { name: "Khối Doanh nghiệp & M&A", count: filteredUsers.filter(u => (u.title || '').includes('Doanh nghiệp') || (u.title || '').includes('Thương mại') || (u.practice_areas || '').includes('Doanh nghiệp')).length || Math.max(1, Math.ceil(filteredUsers.length * 0.25)), color: "#06b6d4" },
     { name: "Khối Đất đai & BĐS", count: filteredUsers.filter(u => (u.title || '').includes('Đất đai') || (u.title || '').includes('Bất động sản')).length || Math.max(1, Math.ceil(filteredUsers.length * 0.2)), color: "#10b981" },
     { name: "Khối Hành chính - Tổng hợp", count: filteredUsers.filter(u => (u.title || '').includes('Hành chính') || (u.title || '').includes('Nhân sự') || (u.title || '').includes('Trợ lý')).length || Math.max(1, filteredUsers.length - Math.ceil(filteredUsers.length * 0.8)), color: "#f59e0b" }
-  ] : [
-    { name: "Ban Điều hành", count: 1, color: "#a855f7" },
-    { name: "Khối Tố tụng & Dân sự", count: 2, color: "#3b82f6" },
-    { name: "Khối Doanh nghiệp & M&A", count: 1, color: "#06b6d4" },
-    { name: "Khối Đất đai & BĐS", count: 1, color: "#10b981" }
-  ];
+  ] : [];
 
-  const recruitmentFunnelData = [
-    { stage: "Ứng tuyển", count: Math.max(12, totalUsersCount * 3 + 8), fill: "#3b82f6" },
-    { stage: "Duyệt hồ sơ", count: Math.max(6, totalUsersCount * 2 + 4), fill: "#8b5cf6" },
-    { stage: "Phỏng vấn", count: Math.max(3, totalUsersCount + 2), fill: "#ec4899" },
-    { stage: "Nhận việc", count: Math.max(1, totalUsersCount), fill: "#10b981" }
-  ];
+  const recruitmentFunnelData: any[] = [];
 
   const doneCount = filteredRecords.filter(r => r.status === 'Hoàn thành' || r.status === 'Đã duyệt').length;
   const inProgCount = filteredRecords.filter(r => r.status === 'Đang xử lý' || r.status === 'Thụ lý' || r.status === 'Chờ duyệt' || r.status === 'Đang tranh tụng').length;
   const pendingCount = Math.max(0, totalCasesCount - (doneCount + inProgCount));
 
+  const financialSummary = useMemo(() => {
+    const billed = filteredRecords.reduce((sum, record) => sum + Number(record.revenue ?? record.fee ?? record.feeAmount ?? record.value ?? 0), 0);
+    const collected = filteredRecords.reduce((sum, record) => sum + Number(record.paidAmount ?? record.collectedAmount ?? record.paid ?? 0), 0);
+    const outstanding = Math.max(0, billed - collected);
+    const recoveryRate = billed > 0 ? (collected / billed) * 100 : null;
+    return { billed, collected, outstanding, recoveryRate };
+  }, [filteredRecords]);
+
+  const formatCurrency = (value: number) => value.toLocaleString("vi-VN");
+
   const ticketStatusData = totalCasesCount > 0 ? [
     { name: "Đã hoàn thành", value: doneCount || 1, color: "#10b981" },
     { name: "Đang xử lý", value: inProgCount || 1, color: "#3b82f6" },
     { name: "Chờ bổ sung / Tồn đọng", value: pendingCount || 0, color: "#f59e0b" }
-  ] : [
-    { name: "Đã xử lý", value: 12, color: "#10b981" },
-    { name: "Đang giải quyết", value: 5, color: "#3b82f6" },
-    { name: "Tồn đọng", value: 2, color: "#f59e0b" }
-  ];
+  ] : [];
 
   const coreRules = [
     { title: "Network Security (Bảo mật mạng)", icon: <Server size={20} className="text-blue-400" /> },
@@ -851,8 +808,8 @@ export default function SecurityView({
                   </button>
                 </div>
                 <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                  Tỷ lệ xử lý hồ sơ tháng này đạt <strong className="text-emerald-400">96.8% SLA</strong> (tăng 1.4% so với kỳ trước). 
-                  Doanh thu dịch vụ pháp lý phát sinh tăng <strong className="text-cyan-400">+14.2%</strong>, dẫn đầu bởi các mảng <strong>Tư vấn Doanh nghiệp & M&A</strong>. 
+                  Hệ thống đang hiển thị các chỉ số tính từ dữ liệu hồ sơ, nhân sự và nhật ký thực tế. 
+                  Chỉ số SLA và tăng trưởng chỉ xuất hiện khi có đủ dữ liệu kỳ hiện tại và kỳ đối chiếu. 
                   Hiện có <strong className="text-amber-400">{pendingApprovals.length} đề xuất hợp đồng giá trị cao</strong> đang chờ Ban Giám đốc phê duyệt.
                 </p>
               </div>
@@ -894,9 +851,9 @@ export default function SecurityView({
                   <p className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Tỷ Lệ Hoàn Thành SLA</p>
                   <span className="text-[9px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">Chi tiết ↗</span>
                 </div>
-                <p className="text-3xl font-black text-emerald-400 mt-1">96.8%</p>
+                <p className="text-3xl font-black text-emerald-400 mt-1">{totalCasesCount > 0 ? `${Math.round((doneCount / totalCasesCount) * 1000) / 10}%` : "--"}</p>
                 <div className="flex items-center gap-2 mt-2 text-[11px]">
-                  <span className="text-emerald-400 font-bold">Phản hồi TB: 24 phút</span>
+                  <span className="text-emerald-400 font-bold">Phản hồi TB: Chưa có dữ liệu</span>
                   <span className="text-slate-500">•</span>
                   <span className="text-emerald-400 font-bold">↑ +1.4%</span>
                 </div>
@@ -917,10 +874,10 @@ export default function SecurityView({
                   <span className="text-[9px] font-bold text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded">Chi tiết ↗</span>
                 </div>
                 <p className="text-3xl font-black text-cyan-400 mt-1">
-                  {(records.reduce((acc, r) => acc + (Number(r.fee) || Number(r.value) || 18500000), 0) / 1000000).toLocaleString("vi-VN")} <span className="text-xs font-normal text-slate-400">Tr VNĐ</span>
+                  {(records.reduce((acc, r) => acc + (Number(r.fee) || Number(r.value) || Number(r.feeAmount) || 0), 0) / 1000000).toLocaleString("vi-VN")} <span className="text-xs font-normal text-slate-400">Tr VNĐ</span>
                 </p>
                 <div className="flex items-center gap-2 mt-2 text-[11px]">
-                  <span className="text-cyan-400 font-bold">↑ +14.2% so với tháng trước</span>
+                  <span className="text-cyan-400 font-bold">Đối chiếu tăng trưởng: Chưa có dữ liệu</span>
                 </div>
               </div>
               <div className="w-12 h-12 rounded-2xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center border border-cyan-500/30 shrink-0 group-hover:scale-110 transition-transform">
@@ -940,7 +897,7 @@ export default function SecurityView({
                 </div>
                 <p className="text-3xl font-black text-purple-400 mt-1">{totalUsersCount} <span className="text-xs font-normal text-slate-400">nhân sự</span></p>
                 <div className="flex items-center gap-2 mt-2 text-[11px]">
-                  <span className="text-purple-400 font-bold">KPI Trung bình: 89.4 điểm</span>
+                  <span className="text-purple-400 font-bold">KPI Trung bình: Chưa có dữ liệu</span>
                 </div>
               </div>
               <div className="w-12 h-12 rounded-2xl bg-purple-500/20 text-purple-400 flex items-center justify-center border border-purple-500/30 shrink-0 group-hover:scale-110 transition-transform">
@@ -1403,26 +1360,26 @@ export default function SecurityView({
               <div className="grid grid-cols-2 gap-3 my-2">
                 <div className={`p-3.5 rounded-xl border ${innerBoxBg} flex flex-col justify-between`}>
                   <p className="text-[10px] font-black uppercase text-slate-400">Tạm Ứng Đã Nhận (Retainers)</p>
-                  <p className="text-xl font-black text-emerald-400 mt-1 font-mono">185.000.000 <span className="text-xs font-normal text-slate-400">Đ</span></p>
-                  <p className="text-[10px] text-slate-400 mt-1">Đã cấn trừ vào phí dịch vụ: 120tr VNĐ</p>
+                  <p className="text-xl font-black text-emerald-400 mt-1 font-mono">{formatCurrency(financialSummary.collected)} <span className="text-xs font-normal text-slate-400">Đ</span></p>
+                  <p className="text-[10px] text-slate-400 mt-1">Tổng thu thực tế từ hồ sơ đang hiển thị</p>
                 </div>
 
                 <div className={`p-3.5 rounded-xl border ${innerBoxBg} flex flex-col justify-between`}>
                   <p className="text-[10px] font-black uppercase text-slate-400">Công Nợ Phí Cần Thu</p>
-                  <p className="text-xl font-black text-rose-400 mt-1 font-mono">42.500.000 <span className="text-xs font-normal text-slate-400">Đ</span></p>
-                  <p className="text-[10px] text-rose-400/80 mt-1 font-bold">⚠️ 3 hồ sơ quá hạn thanh toán</p>
+                  <p className="text-xl font-black text-rose-400 mt-1 font-mono">{formatCurrency(financialSummary.outstanding)} <span className="text-xs font-normal text-slate-400">Đ</span></p>
+                  <p className="text-[10px] text-rose-400/80 mt-1 font-bold">Công nợ tính từ doanh thu và số đã thu trong dữ liệu thực</p>
                 </div>
 
                 <div className={`p-3.5 rounded-xl border ${innerBoxBg} flex flex-col justify-between`}>
                   <p className="text-[10px] font-black uppercase text-slate-400">Án Phí / Chi Phí Đã Ứng</p>
-                  <p className="text-xl font-black text-cyan-400 mt-1 font-mono">18.200.000 <span className="text-xs font-normal text-slate-400">Đ</span></p>
-                  <p className="text-[10px] text-slate-400 mt-1">Án phí Tòa án & Phí Giám định</p>
+                  <p className="text-xl font-black text-cyan-400 mt-1 font-mono">{formatCurrency(financialSummary.billed)} <span className="text-xs font-normal text-slate-400">Đ</span></p>
+                  <p className="text-[10px] text-slate-400 mt-1">Tổng giá trị phí ghi nhận trong hồ sơ</p>
                 </div>
 
                 <div className={`p-3.5 rounded-xl border ${innerBoxBg} flex flex-col justify-between`}>
                   <p className="text-[10px] font-black uppercase text-slate-400">Tỷ Lệ Thu Hồi Phí</p>
-                  <p className="text-xl font-black text-purple-400 mt-1 font-mono">94.2%</p>
-                  <p className="text-[10px] text-emerald-400 mt-1 font-bold">↑ Cải thiện +3.1% so với quý trước</p>
+                  <p className="text-xl font-black text-purple-400 mt-1 font-mono">{financialSummary.recoveryRate === null ? "--" : `${financialSummary.recoveryRate.toFixed(1)}%`}</p>
+                  <p className="text-[10px] text-slate-400 mt-1 font-bold">Chưa có dữ liệu so sánh kỳ trước</p>
                 </div>
               </div>
 
@@ -1600,8 +1557,8 @@ export default function SecurityView({
                 </div>
               </div>
               <div className="flex items-baseline gap-2">
-                <p className="text-2xl font-black text-blue-400">{systemStatus ? systemStatus.cpuUsage.toFixed(1) : (cpuHistory[cpuHistory.length - 1]?.cpu || 18.4)}%</p>
-                <span className="text-[10px] text-emerald-400 font-bold">Optimal</span>
+                <p className="text-2xl font-black text-blue-400">{systemStatus ? `${systemStatus.cpuUsage.toFixed(1)}%` : "--"}</p>
+                <span className="text-[10px] text-emerald-400 font-bold">{systemStatus ? "Đang đo" : "Chưa có dữ liệu"}</span>
               </div>
               {/* Mini Sparkline */}
               <div className="h-7 mt-2 w-full">
@@ -1621,10 +1578,10 @@ export default function SecurityView({
                   <MemoryStick size={18} />
                 </div>
               </div>
-              <p className="text-2xl font-black text-purple-400">{systemStatus ? systemStatus.memoryUsage.toFixed(1) : (cpuHistory[cpuHistory.length - 1]?.ram || 52.1)}%</p>
-              <p className="text-[10px] text-slate-400 mt-1">566.1 MB / 2.0 GB</p>
+              <p className="text-2xl font-black text-purple-400">{systemStatus ? `${systemStatus.memoryUsage.toFixed(1)}%` : "--"}</p>
+              <p className="text-[10px] text-slate-400 mt-1">{systemStatus ? `${systemStatus.usedMem} MB / ${systemStatus.totalMem} MB` : "Chưa có dữ liệu"}</p>
               <div className="w-full bg-slate-800 rounded-full h-1.5 mt-2 overflow-hidden">
-                <div className="bg-gradient-to-r from-purple-500 to-indigo-500 h-full rounded-full transition-all duration-500" style={{ width: `${systemStatus?.memoryUsage || 52}%` }}></div>
+                <div className="bg-gradient-to-r from-purple-500 to-indigo-500 h-full rounded-full transition-all duration-500" style={{ width: `${systemStatus?.memoryUsage || 0}%` }}></div>
               </div>
             </div>
 
@@ -1636,10 +1593,10 @@ export default function SecurityView({
                   <HardDrive size={18} />
                 </div>
               </div>
-              <p className="text-2xl font-black text-amber-400">{systemStatus ? systemStatus.diskUsage.toFixed(1) : 12.4}%</p>
-              <p className="text-[10px] text-slate-400 mt-1">24.8 GB / 200 GB</p>
+              <p className="text-2xl font-black text-amber-400">{systemStatus ? `${systemStatus.diskUsage.toFixed(1)}%` : "--"}</p>
+              <p className="text-[10px] text-slate-400 mt-1">{systemStatus ? `${systemStatus.usedDisk} GB / ${systemStatus.totalDisk} GB` : "Chưa có dữ liệu"}</p>
               <div className="w-full bg-slate-800 rounded-full h-1.5 mt-2 overflow-hidden">
-                <div className="bg-gradient-to-r from-amber-500 to-orange-500 h-full rounded-full transition-all duration-500" style={{ width: '12.4%' }}></div>
+                <div className="bg-gradient-to-r from-amber-500 to-orange-500 h-full rounded-full transition-all duration-500" style={{ width: `${systemStatus?.diskUsage || 0}%` }}></div>
               </div>
             </div>
 
@@ -1651,7 +1608,7 @@ export default function SecurityView({
                   <Globe size={18} />
                 </div>
               </div>
-              <p className="text-xl font-black text-cyan-400">{systemStatus?.networkIn || 48} / {systemStatus?.networkOut || 82} <span className="text-xs font-normal">Mbps</span></p>
+              <p className="text-xl font-black text-cyan-400">{systemStatus ? `${systemStatus.networkIn} / ${systemStatus.networkOut}` : "--"} <span className="text-xs font-normal">Mbps</span></p>
               <div className="mt-3 flex items-center justify-between text-[10px] text-slate-400 border-t border-slate-800/80 pt-2">
                 <span className="text-cyan-400 flex items-center gap-0.5"><ArrowDownToLine size={12}/> Inbound</span>
                 <span className="text-indigo-400 flex items-center gap-0.5"><ArrowUpFromLine size={12}/> Outbound</span>
@@ -1666,7 +1623,7 @@ export default function SecurityView({
                   <Clock size={18} />
                 </div>
               </div>
-              <p className="text-lg font-black text-rose-400">{formatUptime(systemStatus?.uptime || 1280)}</p>
+              <p className="text-lg font-black text-rose-400">{systemStatus ? formatUptime(systemStatus.uptime) : "Chưa có dữ liệu"}</p>
               <div className="mt-3 flex items-center justify-between text-[10px] text-emerald-400 border-t border-slate-800/80 pt-2 font-bold">
                 <span>SLA Uptime:</span>
                 <span className="bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">99.99%</span>
@@ -1720,7 +1677,7 @@ export default function SecurityView({
                 <div className="space-y-2 mt-2">
                   <div className="flex items-center justify-between text-xs">
                     <span className={`${subText}`}>Lần cuối</span>
-                    <span className="font-extrabold text-indigo-500 dark:text-indigo-400">Mới nhất</span>
+                    <span className="font-extrabold text-indigo-500 dark:text-indigo-400">Chưa cấu hình</span>
                   </div>
                   <div className="flex items-center justify-between text-xs">
                     <span className={`${subText}`}>Kích thước</span>
@@ -1749,7 +1706,7 @@ export default function SecurityView({
                 <div className="mt-1">
                   <p className="text-[10px] font-bold uppercase text-slate-400">HẾT HẠN SAU</p>
                   <div className="flex items-baseline gap-1.5 my-0.5">
-                    <span className="text-2xl font-black text-slate-800 dark:text-slate-100">365</span>
+                    <span className="text-2xl font-black text-slate-800 dark:text-slate-100">--</span>
                     <span className="text-xs font-bold text-slate-500">ngày</span>
                   </div>
                   <p className="text-[10px] text-slate-400">(Tự động gia hạn)</p>
@@ -1772,15 +1729,15 @@ export default function SecurityView({
                 <div className="space-y-1.5 text-xs">
                   <div className="flex items-center justify-between">
                     <span className={`${subText}`}>Thành công</span>
-                    <span className="font-extrabold text-emerald-500">1</span>
+                    <span className="font-extrabold text-emerald-500">{systemStatus?.loginStats?.success ?? 0}</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className={`${subText}`}>Thất bại</span>
-                    <span className="font-extrabold text-slate-400">0</span>
+                    <span className="font-extrabold text-slate-400">{systemStatus?.loginStats?.failed ?? 0}</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className={`${subText}`}>Thiết bị mới</span>
-                    <span className="font-extrabold text-slate-400">0</span>
+                    <span className="font-extrabold text-slate-400">{systemStatus?.loginStats?.newDevices ?? 0}</span>
                   </div>
                 </div>
                 <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800/60">
@@ -1806,11 +1763,11 @@ export default function SecurityView({
                 <div className="space-y-2 text-xs">
                   <div className="flex items-center justify-between">
                     <span className={`${subText}`}>Kết nối hiện tại</span>
-                    <span className="font-extrabold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80 text-slate-800 dark:text-slate-200">1</span>
+                    <span className="font-extrabold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80 text-slate-800 dark:text-slate-200">{systemStatus?.dbStatus?.connections ?? 0}</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className={`${subText}`}>Query chậm</span>
-                    <span className="font-extrabold text-slate-400">0</span>
+                    <span className="font-extrabold text-slate-400">{systemStatus?.dbStatus?.slowQueries ?? 0}</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className={`${subText}`}>Trạng thái</span>
@@ -1835,11 +1792,11 @@ export default function SecurityView({
                 <div className="space-y-2 text-xs">
                   <div className="flex items-center justify-between">
                     <span className={`${subText}`}>Online</span>
-                    <span className="font-extrabold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80 text-slate-800 dark:text-slate-200">1 người</span>
+                    <span className="font-extrabold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80 text-slate-800 dark:text-slate-200">{systemStatus?.activeConnections ?? 0} người</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className={`${subText}`}>Phiên Admin</span>
-                    <span className="font-extrabold text-indigo-500 dark:text-indigo-400">1</span>
+                    <span className="font-extrabold text-indigo-500 dark:text-indigo-400">{systemStatus?.adminSessions ?? 0}</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className={`${subText}`}>Phiên đáng ngờ</span>
@@ -1926,14 +1883,9 @@ export default function SecurityView({
               <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between text-xs text-slate-400 gap-2">
                 <div className="flex items-center gap-2">
                   <Zap size={14} className="text-amber-400 animate-bounce" />
-                  <span>Chế độ Phòng thủ WAF Active Lockdown: <strong>Kích hoạt</strong></span>
+                  <span>Chế độ WAF Lockdown: <strong>Chưa có telemetry điều khiển</strong></span>
                 </div>
-                <button
-                  onClick={() => showToast("Đã kích hoạt Chế độ Siêu Bảo vệ WAF Lockdown!")}
-                  className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[11px] rounded-lg shadow-md transition-all cursor-pointer"
-                >
-                  Bật WAF Lockdown
-                </button>
+                <span className="px-3 py-1 bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-bold text-[11px] rounded-lg">Chưa cấu hình</span>
               </div>
             </div>
 
@@ -1960,10 +1912,7 @@ export default function SecurityView({
                       time: l.time,
                       level: l.status === 'Đã chặn' ? 'warning' : 'safe'
                     }))
-                  : [
-                      { title: `${realUserNames[0]?.name || "Quản trị viên"}: Cập nhật hợp đồng`, reason: "Đã đồng bộ realtime với CSDL SQLite / Firestore", time: new Date().toLocaleTimeString('vi-VN'), level: "safe" },
-                      { title: `${realUserNames[1]?.name || realUserNames[0]?.name || "Quản trị viên"}: Chấm công AI`, reason: "Xác thực khuôn mặt AI thành công", time: new Date().toLocaleTimeString('vi-VN'), level: "info" }
-                    ]
+                  : []
                 ).map((item, idx) => (
                   <div key={idx} className={`p-3 rounded-xl border ${innerBoxBg} flex items-start gap-3 hover:border-slate-700 transition-all`}>
                     <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
@@ -1982,6 +1931,11 @@ export default function SecurityView({
                     </div>
                   </div>
                 ))}
+                {(!systemStatus?.auditLogs || systemStatus.auditLogs.length === 0) && (
+                  <div className={`p-5 rounded-xl border ${innerBoxBg} text-center text-xs text-slate-500`}>
+                    Chưa ghi nhận sự kiện bảo mật trong dữ liệu hệ thống.
+                  </div>
+                )}
               </div>
 
               <button
@@ -2323,13 +2277,7 @@ export default function SecurityView({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {(systemStatus?.auditLogs && systemStatus.auditLogs.length > 0 ? systemStatus.auditLogs : [
-                    { time: new Date().toLocaleTimeString('vi-VN'), user: realUserNames[0]?.name || "Quản trị viên", role: realUserNames[0]?.role || "admin", action: "Cập nhật Hợp đồng dịch vụ pháp lý HS-2026", target: "File PDF #42", status: "Thành công" },
-                    { time: new Date().toLocaleTimeString('vi-VN'), user: realUserNames[1]?.name || realUserNames[0]?.name || "Quản trị viên", role: realUserNames[1]?.role || "staff", action: "Đăng nhập hệ thống web ERP", target: "Session Web", status: "Thành công" },
-                    { time: new Date().toLocaleTimeString('vi-VN'), user: realUserNames[2]?.name || realUserNames[0]?.name || "Quản trị viên", role: realUserNames[2]?.role || "staff", action: "Tải tài liệu chứng cứ sơ thẩm", target: "Chung-tu-thanh-toan.pdf", status: "Thành công" },
-                    { time: new Date().toLocaleTimeString('vi-VN'), user: realUserNames[3]?.name || realUserNames[0]?.name || "Quản trị viên", role: realUserNames[3]?.role || "staff", action: "Xác thực bảo mật tài khoản nhân sự", target: "Hệ thống ERP", status: "Thành công" },
-                    { time: new Date().toLocaleTimeString('vi-VN'), user: realUserNames[4]?.name || realUserNames[0]?.name || "Quản trị viên", role: realUserNames[4]?.role || "staff", action: "Phê duyệt bảng lương nhân sự", target: "Bảng lương", status: "Thành công" }
-                  ])
+                  {(systemStatus?.auditLogs || [])
                     .filter((item: any) => selectedAuditFilter === "Tất cả" || (item.action || "").includes(selectedAuditFilter))
                     .filter((item: any) => !searchQuery || (item.user || "").toLowerCase().includes(searchQuery.toLowerCase()) || (item.action || "").toLowerCase().includes(searchQuery.toLowerCase()))
                     .map((row: any, idx: number) => (
@@ -2354,6 +2302,9 @@ export default function SecurityView({
                         </td>
                       </tr>
                     ))}
+                  {(!systemStatus?.auditLogs || systemStatus.auditLogs.length === 0) && (
+                    <tr><td colSpan={5} className="py-8 text-center text-slate-500">Chưa ghi nhận nhật ký thao tác.</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -2454,8 +2405,8 @@ export default function SecurityView({
                 <div className={`p-4 rounded-2xl border ${cardBg} flex items-center justify-between`}>
                   <div>
                     <p className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Tỷ lệ Chấm công Đúng giờ</p>
-                    <p className="text-3xl font-black text-emerald-400 mt-1">96.8%</p>
-                    <p className="text-[10px] text-emerald-400 mt-1 font-bold">↑ +1.2% so với tháng trước</p>
+                    <p className="text-3xl font-black text-emerald-400 mt-1">--</p>
+                    <p className="text-[10px] text-emerald-400 mt-1 font-bold">Chưa có dữ liệu đối chiếu</p>
                   </div>
                   <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/30">
                     <UserCheck size={24} />
@@ -2465,8 +2416,8 @@ export default function SecurityView({
                 <div className={`p-4 rounded-2xl border ${cardBg} flex items-center justify-between`}>
                   <div>
                     <p className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Chỉ số Giữ chân (Retention)</p>
-                    <p className="text-3xl font-black text-cyan-400 mt-1">94.2%</p>
-                    <p className="text-[10px] text-cyan-400 mt-1 font-bold">Mức ổn định rất cao</p>
+                    <p className="text-3xl font-black text-cyan-400 mt-1">--</p>
+                    <p className="text-[10px] text-cyan-400 mt-1 font-bold">Chưa có dữ liệu nhân sự lịch sử</p>
                   </div>
                   <div className="w-12 h-12 rounded-2xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center border border-cyan-500/30">
                     <Award size={24} />
@@ -2476,8 +2427,8 @@ export default function SecurityView({
                 <div className={`p-4 rounded-2xl border ${cardBg} flex items-center justify-between`}>
                   <div>
                     <p className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Hồ sơ Ứng tuyển Mới</p>
-                    <p className="text-3xl font-black text-indigo-400 mt-1">{Math.max(12, totalUsersCount * 2 + 4)} <span className="text-xs font-normal text-slate-400">hồ sơ</span></p>
-                    <p className="text-[10px] text-indigo-400 mt-1 font-bold">Tuyển dụng liên tục 24/7</p>
+                    <p className="text-3xl font-black text-indigo-400 mt-1">-- <span className="text-xs font-normal text-slate-400">hồ sơ</span></p>
+                    <p className="text-[10px] text-indigo-400 mt-1 font-bold">Chưa có dữ liệu tuyển dụng</p>
                   </div>
                   <div className="w-12 h-12 rounded-2xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center border border-indigo-500/30">
                     <Briefcase size={24} />
@@ -3682,42 +3633,31 @@ export default function SecurityView({
               {detailModalContent === 'sla_detail' && (
                 <div className="space-y-4">
                   <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-300 font-medium">
-                    Tỷ lệ hoàn thành SLA giải quyết yêu cầu pháp lý đạt <strong className="text-emerald-400">96.8%</strong>. Thời gian phản hồi ban đầu trung bình: <strong>24 phút</strong>.
+                    Tỷ lệ hoàn thành SLA: <strong className="text-emerald-400">{totalCasesCount > 0 ? `${Math.round((doneCount / totalCasesCount) * 1000) / 10}%` : "Chưa có dữ liệu"}</strong>. Thời gian phản hồi trung bình: <strong>Chưa có dữ liệu</strong>.
                   </div>
 
                   <div className="space-y-2">
                     {officesList && officesList.length > 0 ? (
                       officesList.map((o: any, idx: number) => {
-                        const targetPct = 95.2 + ((idx * 1.3) % 4.1);
-                        const isSlaOk = targetPct >= 96.0;
+                        const branchRecords = filteredRecords.filter((r: any) => isBranchMatch(r.branch || r.data?.branch || "", o.name));
+                        const branchDone = branchRecords.filter((r: any) => r.status === "Hoàn thành" || r.status === "Đã duyệt").length;
+                        const targetPct = branchRecords.length ? (branchDone / branchRecords.length) * 100 : null;
+                        const isSlaOk = targetPct !== null && targetPct >= 96.0;
                         return (
                           <div key={o.id || idx} className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex justify-between items-center">
                             <span className="text-slate-400 font-bold">{o.name} SLA</span>
                             <span className={`font-mono font-black ${isSlaOk ? 'text-emerald-400' : 'text-amber-400'}`}>
-                              {targetPct.toFixed(1)}% ({targetPct >= 98.0 ? "Vượt chỉ tiêu" : "Đạt chỉ tiêu"})
+                              {targetPct === null ? "Chưa có dữ liệu" : `${targetPct.toFixed(1)}% (${targetPct >= 98.0 ? "Vượt chỉ tiêu" : "Đạt chỉ tiêu"})`}
                             </span>
                           </div>
                         );
                       })
                     ) : (
-                      <>
-                        <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex justify-between items-center">
-                          <span className="text-slate-400 font-bold">Chi nhánh Hà Nội SLA</span>
-                          <span className="font-mono font-black text-emerald-400">98.2% (Vượt chỉ tiêu)</span>
-                        </div>
-                        <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex justify-between items-center">
-                          <span className="text-slate-400 font-bold">Chi nhánh TP. Hồ Chí Minh SLA</span>
-                          <span className="font-mono font-black text-emerald-400">95.6% (Đạt chỉ tiêu)</span>
-                        </div>
-                        <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex justify-between items-center">
-                          <span className="text-slate-400 font-bold">Chi nhánh Đà Nẵng SLA</span>
-                          <span className="font-mono font-black text-emerald-400">96.5% (Đạt chỉ tiêu)</span>
-                        </div>
-                      </>
+                      <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 text-slate-400">Chưa có dữ liệu SLA theo chi nhánh.</div>
                     )}
                     <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex justify-between items-center">
                       <span className="text-slate-400 font-bold">Hồ sơ nguy cơ trễ hạn (SLA Warning)</span>
-                      <span className="font-mono font-black text-amber-400">2 hồ sơ (Cần đôn đốc)</span>
+                      <span className="font-mono font-black text-amber-400">{pendingCount} hồ sơ</span>
                     </div>
                   </div>
                 </div>
@@ -3726,7 +3666,7 @@ export default function SecurityView({
               {detailModalContent === 'revenue_detail' && (
                 <div className="space-y-4">
                   <div className="p-3 bg-cyan-500/10 border border-cyan-500/20 rounded-xl text-cyan-300 font-medium">
-                    Doanh thu dịch vụ pháp lý lũy kế: <strong className="text-cyan-400 font-mono">1.120.000.000 VNĐ</strong> (Tăng trưởng +14.2% so với tháng trước).
+                    Doanh thu dịch vụ pháp lý lũy kế: <strong className="text-cyan-400 font-mono">{(records.reduce((sum, r) => sum + (Number(r.fee) || Number(r.value) || Number(r.feeAmount) || 0), 0)).toLocaleString("vi-VN")} VNĐ</strong>. Tăng trưởng: chưa có dữ liệu đối chiếu.
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
@@ -3838,19 +3778,19 @@ export default function SecurityView({
                   <div className="space-y-2">
                     <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex justify-between items-center">
                       <span className="text-slate-400 font-bold">Tạm ứng khách hàng đã nhận (Retainers)</span>
-                      <span className="font-mono font-black text-emerald-400">185.000.000 VNĐ</span>
+                      <span className="font-mono font-black text-emerald-400">{formatCurrency(financialSummary.collected)} VNĐ</span>
                     </div>
                     <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex justify-between items-center">
                       <span className="text-slate-400 font-bold">Công nợ phí dịch vụ chưa thu</span>
-                      <span className="font-mono font-black text-rose-400">42.500.000 VNĐ</span>
+                      <span className="font-mono font-black text-rose-400">{formatCurrency(financialSummary.outstanding)} VNĐ</span>
                     </div>
                     <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex justify-between items-center">
                       <span className="text-slate-400 font-bold">Án phí Tòa án đã ứng trước</span>
-                      <span className="font-mono font-black text-cyan-400">18.200.000 VNĐ</span>
+                      <span className="font-mono font-black text-cyan-400">{formatCurrency(financialSummary.billed)} VNĐ</span>
                     </div>
                     <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex justify-between items-center">
                       <span className="text-slate-400 font-bold">Tỷ lệ thu hồi công nợ đúng hạn</span>
-                      <span className="font-mono font-black text-purple-400">94.2%</span>
+                      <span className="font-mono font-black text-purple-400">{financialSummary.recoveryRate === null ? "--" : `${financialSummary.recoveryRate.toFixed(1)}%`}</span>
                     </div>
                   </div>
                 </div>

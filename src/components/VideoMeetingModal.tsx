@@ -2130,17 +2130,6 @@ export const VideoMeetingModal: React.FC<VideoMeetingModalProps> = ({
                       localStorage.setItem("yeastar_call_logs_v2", JSON.stringify(updated));
                       window.dispatchEvent(new Event('storage'));
 
-                      // Sync to Firestore
-                      try {
-                        import('firebase/firestore').then(({ doc, setDoc }) => {
-                          import('../utils/firebase').then(({ db }) => {
-                            setDoc(doc(db, 'voip_calls', newLog.id), newLog).catch(err => console.error("Firestore sync error:", err));
-                          });
-                        });
-                      } catch (e) {
-                        console.error("Firebase dynamic import err:", e);
-                      }
-
                       showToast(`⚡ Đã đồng bộ Biên bản họp vào Hồ sơ ${selectedDossierId} theo thời gian thực!`);
                     } else {
                       showToast("Đã lưu ghi chú cuộc họp thành công!");
@@ -2259,17 +2248,6 @@ export const VideoMeetingModal: React.FC<VideoMeetingModalProps> = ({
                         };
                         localStorage.setItem("consultation_appointments", JSON.stringify([newApptItem, ...apptList]));
                         window.dispatchEvent(new Event('storage'));
-
-                        // Sync to Firestore
-                        try {
-                          import('firebase/firestore').then(({ doc, setDoc }) => {
-                            import('../utils/firebase').then(({ db }) => {
-                              setDoc(doc(db, 'appointments', newApptItem.id), newApptItem).catch(err => console.error("Firestore sync error:", err));
-                            });
-                          });
-                        } catch (e) {
-                          console.error("Firebase dynamic import err:", e);
-                        }
 
                         setNewTaskTitle("");
                         setShowAddTaskModal(false);

@@ -3,13 +3,20 @@ import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
 import db from "../../db/database";
 import { AgentMemoryService } from "./memory.service";
 import { executeUnifiedMcpTool } from "../mcp/unified.registry";
+import { SystemDataAccess } from "../../system/data-access/SystemDataAccess";
+import { auth, requireRoles } from "../../middleware/auth";
+import { assertAiAvailable, getAiRuntimeStatus, recordAiFailure, recordAiSuccess } from "./ai.gateway";
 
 const router = Router();
+
+router.get("/status", (_req, res) => {
+  res.json({ success: true, ...getAiRuntimeStatus() });
+});
 
 // ================= AI AGENT MEMORY ENGINE (TencentDB / Mem0) REST API =================
 
 // GET /api/ai/memory - List all memories with optional search & filter
-router.get("/memory", async (req, res) => {
+router.get("/memory", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { query, type, category, entity_id, status = "active", limit = "50" } = req.query as any;
     let sql = `SELECT * FROM ai_agent_memories WHERE 1=1`;
@@ -58,7 +65,7 @@ router.get("/memory", async (req, res) => {
 });
 
 // POST /api/ai/memory - Store a new memory item
-router.post("/memory", async (req, res) => {
+router.post("/memory", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { title, content, memory_type, category, entity_type, entity_id, importance_score, tags, summary } = req.body;
     if (!title || !content) {
@@ -86,7 +93,7 @@ router.post("/memory", async (req, res) => {
 });
 
 // PUT /api/ai/memory/:id - Update an existing memory
-router.put("/memory/:id", async (req, res) => {
+router.put("/memory/:id", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { id } = req.params;
     const { title, content, summary, memory_type, category, importance_score, status, tags } = req.body;
@@ -120,7 +127,7 @@ router.put("/memory/:id", async (req, res) => {
 });
 
 // DELETE /api/ai/memory/:id - Soft-delete / archive memory
-router.delete("/memory/:id", async (req, res) => {
+router.delete("/memory/:id", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { id } = req.params;
     const { permanent } = req.query;
@@ -138,7 +145,7 @@ router.delete("/memory/:id", async (req, res) => {
 });
 
 // POST /api/ai/memory/consolidate - Run cognitive reflection cycle
-router.post("/memory/consolidate", async (req, res) => {
+router.post("/memory/consolidate", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const result = AgentMemoryService.consolidateMemories();
     res.json({ success: true, ...result });
@@ -148,7 +155,7 @@ router.post("/memory/consolidate", async (req, res) => {
 });
 
 // GET /api/ai/memory/stats - Memory store metrics
-router.get("/memory/stats", async (req, res) => {
+router.get("/memory/stats", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const stats = AgentMemoryService.getStats();
     res.json({ success: true, stats });
@@ -158,7 +165,7 @@ router.get("/memory/stats", async (req, res) => {
 });
 
 // POST /api/ai/memory/recall-test - Simulate cognitive retrieval
-router.post("/memory/recall-test", async (req, res) => {
+router.post("/memory/recall-test", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { query, user_email, limit = 5 } = req.body;
     if (!query) return res.status(400).json({ error: "Query is required" });
@@ -347,6 +354,30 @@ function executeSearchTrainedKnowledge(query: string): any[] {
   }
 }
 
+// Helper: Query bounded Call Center history for AI analysis
+function executeSearchCallHistory(query: string): any[] {
+  const searchTerm = `%${query.trim()}%`;
+  try {
+    return db.prepare(`
+      SELECT id, name, phone, type, direction, duration, status,
+             timestamp, staffName, branch, dossierId, dossierTitle,
+             category, call_result, consultationNote
+      FROM voip_calls
+      WHERE name LIKE ? OR phone LIKE ? OR staffName LIKE ? OR branch LIKE ?
+         OR dossierId LIKE ? OR dossierTitle LIKE ? OR category LIKE ?
+         OR call_result LIKE ? OR consultationNote LIKE ?
+      ORDER BY COALESCE(timestamp, created_at) DESC
+      LIMIT 20
+    `).all(
+      searchTerm, searchTerm, searchTerm, searchTerm, searchTerm,
+      searchTerm, searchTerm, searchTerm, searchTerm,
+    ) as any[];
+  } catch (err) {
+    console.error("Error searching call history:", err);
+    return [];
+  }
+}
+
 // Helper: Query total stats
 function executeGetSystemStatistics(): any {
   try {
@@ -395,7 +426,7 @@ function logAiCall(providerName: string, modelUsed: string, promptText: string, 
 }
 
 // GET /api/ai/training - List training data
-router.get("/training", async (req, res) => {
+router.get("/training", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const items = db.prepare("SELECT * FROM ai_training_data ORDER BY id DESC").all();
     res.json(items);
@@ -405,7 +436,7 @@ router.get("/training", async (req, res) => {
 });
 
 // POST /api/ai/training - Add new trained rule
-router.post("/training", async (req, res) => {
+router.post("/training", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { topic, pattern, response } = req.body;
     if (!topic || !pattern || !response) {
@@ -420,7 +451,7 @@ router.post("/training", async (req, res) => {
 });
 
 // DELETE /api/ai/training/:id - Delete trained rule
-router.delete("/training/:id", async (req, res) => {
+router.delete("/training/:id", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { id } = req.params;
     db.prepare("DELETE FROM ai_training_data WHERE id = ?").run(id);
@@ -431,7 +462,7 @@ router.delete("/training/:id", async (req, res) => {
 });
 
 // GET /api/ai/providers - List all configured AI Providers
-router.get("/providers", async (req, res) => {
+router.get("/providers", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const providers = db.prepare("SELECT * FROM ai_providers ORDER BY id ASC").all();
     res.json(providers);
@@ -441,7 +472,7 @@ router.get("/providers", async (req, res) => {
 });
 
 // POST /api/ai/providers - Add new AI Provider
-router.post("/providers", async (req, res) => {
+router.post("/providers", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { name, provider_type, api_key, api_url, default_model, task_assignment, temperature, max_tokens, is_active } = req.body;
     if (!name || !provider_type) {
@@ -484,7 +515,7 @@ router.post("/providers", async (req, res) => {
 });
 
 // PUT /api/ai/providers/:id - Update AI Provider
-router.put("/providers/:id", async (req, res) => {
+router.put("/providers/:id", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { id } = req.params;
     const { name, provider_type, api_key, api_url, default_model, task_assignment, temperature, max_tokens, is_active } = req.body;
@@ -512,7 +543,7 @@ router.put("/providers/:id", async (req, res) => {
 });
 
 // DELETE /api/ai/providers/:id - Delete AI Provider
-router.delete("/providers/:id", async (req, res) => {
+router.delete("/providers/:id", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { id } = req.params;
     db.prepare("DELETE FROM ai_providers WHERE id = ?").run(id);
@@ -523,7 +554,7 @@ router.delete("/providers/:id", async (req, res) => {
 });
 
 // GET /api/ai/models - List synced models
-router.get("/models", async (req, res) => {
+router.get("/models", auth, async (req, res) => {
   try {
     const models = db.prepare("SELECT * FROM ai_models ORDER BY provider ASC, name ASC").all();
     res.json(models);
@@ -533,7 +564,7 @@ router.get("/models", async (req, res) => {
 });
 
 // POST /api/ai/models/sync - Dynamically fetch and sync models list from AI Provider
-router.post("/models/sync", async (req, res) => {
+router.post("/models/sync", requireRoles("admin", "director", "controller"), async (req, res) => {
   try {
     const { provider_type, api_key, api_url } = req.body;
     let fetchedModels: any[] = [];
@@ -642,7 +673,7 @@ router.post("/models/sync", async (req, res) => {
 });
 
 // POST /api/ai/providers/test - Test connection to AI API Key
-router.post("/providers/test", async (req, res) => {
+router.post("/providers/test", requireRoles("admin", "director", "controller"), async (req, res) => {
   const startTime = Date.now();
   try {
     const { provider_type, api_key, api_url, default_model } = req.body;
@@ -884,6 +915,7 @@ router.post("/ask", async (req, res) => {
   const startTime = Date.now();
   try {
     const { prompt, files, enableSearchGrounding, customApiKey, customProviderType } = req.body;
+    assertAiAvailable();
     const candidates = getAllCandidateAiProviders("all", customApiKey, customProviderType);
 
     if (candidates.length === 0) {
@@ -933,6 +965,7 @@ router.post("/ask", async (req, res) => {
           const responseText = data.choices?.[0]?.message?.content || "Khởi tạo phản hồi từ AI không thành công.";
           const latency = Date.now() - pStart;
           logAiCall(provider.name, provider.default_model, prompt, responseText, latency, "success");
+          recordAiSuccess();
           return res.json({ text: responseText, providerUsed: provider.name });
         }
 
@@ -966,6 +999,7 @@ router.post("/ask", async (req, res) => {
           const responseText = data.content?.[0]?.text || "Khởi tạo phản hồi từ Claude không thành công.";
           const latency = Date.now() - pStart;
           logAiCall(provider.name, provider.default_model, prompt, responseText, latency, "success");
+          recordAiSuccess();
           return res.json({ text: responseText, providerUsed: provider.name });
         }
 
@@ -1009,6 +1043,18 @@ router.post("/ask", async (req, res) => {
             type: Type.OBJECT,
             properties: {
               query: { type: Type.STRING, description: "Chủ đề cần tra cứu kiến thức đã huấn luyện." }
+            },
+            required: ["query"]
+          }
+        };
+
+        const searchCallHistoryTool: FunctionDeclaration = {
+          name: "search_call_history",
+          description: "Tra cứu lịch sử cuộc gọi từ Call Center để phân tích khách hàng, hồ sơ, nhân sự, chi nhánh, kết quả tư vấn và hiệu suất liên hệ.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              query: { type: Type.STRING, description: "Tên khách hàng, số điện thoại, mã hồ sơ, nhân sự, chi nhánh hoặc nội dung cuộc gọi cần tra cứu." }
             },
             required: ["query"]
           }
@@ -1126,6 +1172,7 @@ router.post("/ask", async (req, res) => {
             functionDeclarations: [
               searchSystemDataTool,
               searchTrainedKnowledgeTool,
+              searchCallHistoryTool,
               searchAgentMemoryTool,
               storeAgentMemoryTool,
               executeUnifiedMcpToolDecl,
@@ -1137,8 +1184,12 @@ router.post("/ask", async (req, res) => {
           }
         ];
 
-        const sessionUserEmail = (req as any).session?.user?.email || "system";
-        const memoryContext = AgentMemoryService.buildMemoryContext(prompt || "", sessionUserEmail);
+        const authenticatedUser = (req as any).user || (req as any).session?.user || null;
+        const isInternalAiUser = authenticatedUser && String(authenticatedUser.role || "").toLowerCase() !== "client";
+        const sessionUserEmail = authenticatedUser?.email || "system";
+        const memoryContext = isInternalAiUser
+          ? AgentMemoryService.buildMemoryContext(prompt || "", sessionUserEmail)
+          : "";
 
         const parts: any[] = [];
         if (memoryContext) {
@@ -1183,10 +1234,35 @@ router.post("/ask", async (req, res) => {
             let results: any = null;
             const callArgs = call.args as any;
 
+            const publicBlockedTools = new Set([
+              "search_system_data",
+              "search_trained_knowledge",
+              "search_call_history",
+              "get_system_statistics",
+              "search_agent_memory",
+              "store_agent_memory",
+              "execute_unified_mcp_tool",
+              "execute_mcp_iot_tool",
+              "generate_legal_document",
+              "update_record_status",
+            ]);
+            if (!isInternalAiUser && publicBlockedTools.has(call.name || "")) {
+              results = {
+                success: false,
+                error: "Bạn cần đăng nhập để sử dụng dữ liệu và thao tác nội bộ của hệ thống.",
+              };
+              toolParts.push({
+                functionResponse: { name: call.name, response: results },
+              });
+              continue;
+            }
+
             if (call.name === "search_system_data") {
               results = executeSearchSystemData(callArgs.query || "", callArgs.targetTable || "");
             } else if (call.name === "search_trained_knowledge") {
               results = executeSearchTrainedKnowledge(callArgs.query || "");
+            } else if (call.name === "search_call_history") {
+              results = executeSearchCallHistory(callArgs.query || "");
             } else if (call.name === "get_system_statistics") {
               results = executeGetSystemStatistics();
             } else if (call.name === "generate_legal_document") {
@@ -1229,12 +1305,11 @@ router.post("/ask", async (req, res) => {
                   const resTasks = db.prepare("UPDATE tasks SET status = ? WHERE id = ?").run(callArgs.status, callArgs.targetId);
                   rowsAffected = resTasks.changes;
                 } else if (table === "erp_records") {
-                  const record = db.prepare("SELECT data FROM erp_records WHERE id = ?").get(callArgs.targetId) as { data: string } | undefined;
-                  if (record) {
-                    const dataObj = JSON.parse(record.data);
+                  const dataObj = SystemDataAccess.getRecordById(String(callArgs.targetId));
+                  if (dataObj) {
                     dataObj.status = callArgs.status;
-                    const resRec = db.prepare("UPDATE erp_records SET data = ? WHERE id = ?").run(JSON.stringify(dataObj), callArgs.targetId);
-                    rowsAffected = resRec.changes;
+                    SystemDataAccess.saveRecord(dataObj);
+                    rowsAffected = 1;
                   }
                 }
                 results = {
@@ -1349,6 +1424,7 @@ router.post("/ask", async (req, res) => {
     }
 
     console.error("All AI candidates failed. Last error:", lastError);
+    recordAiFailure();
     const errString = lastError ? (lastError.message || String(lastError)) : "";
     const isQuota = errString.includes('429') || errString.includes('RESOURCE_EXHAUSTED') || errString.includes('Quota exceeded');
 
@@ -1362,15 +1438,17 @@ router.post("/ask", async (req, res) => {
 
   } catch (error: any) {
     console.error("AI Route Global Error:", error);
-    res.status(500).json({
+    const unavailable = error.code === "AI_DISABLED" || error.code === "AI_DEGRADED";
+    res.status(unavailable ? 503 : 500).json({
       error: error.message || "Lỗi khi xử lý với AI.",
-      needApiKeyPrompt: true
+      aiUnavailable: unavailable,
+      needApiKeyPrompt: !unavailable
     });
   }
 });
 
 // ================= AI DATA FORMULATOR ENDPOINT =================
-router.post("/data-formulator/formulate", async (req: any, res: any) => {
+router.post("/data-formulator/formulate", auth, async (req: any, res: any) => {
   try {
     const { dataset, instruction, custom_api_key } = req.body;
     if (!dataset || !Array.isArray(dataset)) {

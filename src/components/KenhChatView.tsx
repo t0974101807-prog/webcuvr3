@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { fetchApi } from "../utils/api";
 import { 
   MessageSquare, 
   Send, 
@@ -20,6 +21,9 @@ import {
   ChevronDown,
   X,
   Tag
+  ,Edit2
+  ,UserPlus
+  ,UserMinus
 } from "lucide-react";
 import { io, Socket } from "socket.io-client";
 
@@ -55,6 +59,15 @@ export default function KenhChatView({ language = "vi", user, users = [] }: Kenh
   const [newChannelCategory, setNewChannelCategory] = useState("general");
   const [newChannelPrivate, setNewChannelPrivate] = useState(false);
   const [selectedMembers, setSelectedMembers] = useState<number[]>([]);
+  const [channelMembers, setChannelMembers] = useState<any[]>([]);
+  const [showChannelInfo, setShowChannelInfo] = useState(false);
+  const [showEditChannel, setShowEditChannel] = useState(false);
+  const [editingChannel, setEditingChannel] = useState<any | null>(null);
+  const [editChannelName, setEditChannelName] = useState("");
+  const [editChannelDesc, setEditChannelDesc] = useState("");
+  const [editChannelCategory, setEditChannelCategory] = useState("general");
+  const [editChannelPrivate, setEditChannelPrivate] = useState(false);
+  const [memberSearch, setMemberSearch] = useState("");
   const [uploading, setUploading] = useState(false);
 
   // Soft-delete modal state
@@ -115,6 +128,15 @@ export default function KenhChatView({ language = "vi", user, users = [] }: Kenh
       if (selectedChannel && Number(selectedChannel.id) === delId) {
         setSelectedChannel(null);
       }
+    });
+
+    s.on("chat_channel_updated", (updated: any) => {
+      setChannels(prev => prev.map(channel => Number(channel.id) === Number(updated.id) ? { ...channel, ...updated } : channel));
+      setSelectedChannel(prev => prev && Number(prev.id) === Number(updated.id) ? { ...prev, ...updated } : prev);
+    });
+
+    s.on("chat_channel_members_updated", (data: any) => {
+      if (selectedChannel && Number(data?.channelId) === Number(selectedChannel.id) && Array.isArray(data.members)) setChannelMembers(data.members);
     });
 
     s.on("chat_channel_restored", () => {
@@ -185,6 +207,19 @@ export default function KenhChatView({ language = "vi", user, users = [] }: Kenh
     }
   }, [selectedChannel, selectedDMUser]);
 
+  useEffect(() => {
+    if (!selectedChannel) {
+      setChannelMembers([]);
+      setShowChannelInfo(false);
+      return;
+    }
+    fetch(`/api/chat/channels/${selectedChannel.id}/members`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    }).then(res => res.json()).then(data => {
+      if (Array.isArray(data)) setChannelMembers(data);
+    }).catch(console.error);
+  }, [selectedChannel]);
+
   // Auto scroll to bottom of messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -240,6 +275,70 @@ export default function KenhChatView({ language = "vi", user, users = [] }: Kenh
       console.error(err);
       alert("Lỗi kết nối");
     }
+  };
+
+  const openEditChannel = () => {
+    if (!selectedChannel) return;
+    setEditingChannel(selectedChannel);
+    setEditChannelName(selectedChannel.name || "");
+    setEditChannelDesc(selectedChannel.description || "");
+    setEditChannelCategory(selectedChannel.category || "general");
+    setEditChannelPrivate(Boolean(selectedChannel.is_private));
+    setShowEditChannel(true);
+  };
+
+  const handleUpdateChannel = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingChannel || !editChannelName.trim()) return;
+    const res = await fetch(`/api/chat/channels/${editingChannel.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem('token')}` },
+      body: JSON.stringify({ name: editChannelName, description: editChannelDesc, category: editChannelCategory, is_private: editChannelPrivate })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) return alert(data.error || "Không thể cập nhật kênh");
+    setShowEditChannel(false);
+    setEditingChannel(null);
+    fetchChannels();
+  };
+
+  const canManageSelectedChannel = Boolean(selectedChannel && (isAdminOrManager || Number(selectedChannel.created_by) === Number(user?.id) || selectedChannel.my_role === "admin"));
+
+  const addChannelMembers = async (userIds: number[]) => {
+    if (!selectedChannel || userIds.length === 0) return;
+    const res = await fetch(`/api/chat/channels/${selectedChannel.id}/members`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem('token')}` },
+      body: JSON.stringify({ user_ids: userIds })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) return alert(data.error || "Không thể thêm thành viên");
+    setChannelMembers(data.members || []);
+    fetchChannels();
+  };
+
+  const removeChannelMember = async (memberId: number) => {
+    if (!selectedChannel || !confirm("Xóa thành viên này khỏi kênh?")) return;
+    const res = await fetch(`/api/chat/channels/${selectedChannel.id}/members/${memberId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) return alert(data.error || "Không thể xóa thành viên");
+    setChannelMembers(prev => prev.filter(member => Number(member.id) !== Number(memberId)));
+    fetchChannels();
+  };
+
+  const updateMemberRole = async (memberId: number, role: "admin" | "member") => {
+    if (!selectedChannel) return;
+    const res = await fetch(`/api/chat/channels/${selectedChannel.id}/members/${memberId}/role`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem('token')}` },
+      body: JSON.stringify({ role })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) return alert(data.error || "Không thể cập nhật quyền");
+    setChannelMembers(prev => prev.map(member => Number(member.id) === Number(memberId) ? { ...member, channel_role: role } : member));
   };
 
   // Soft-delete channel (moves to Recycle Bin)
@@ -339,7 +438,7 @@ export default function KenhChatView({ language = "vi", user, users = [] }: Kenh
     formData.append("file", file);
 
     try {
-      const res = await fetch("/api/live-upload", {
+      const res = await fetchApi("/api/secure-upload", {
         method: "POST",
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -587,6 +686,12 @@ export default function KenhChatView({ language = "vi", user, users = [] }: Kenh
               )}
 
               {/* Move Channel to Recycle Bin button */}
+              {selectedChannel && canManageSelectedChannel && (
+                <>
+                  <button type="button" onClick={() => setShowChannelInfo(true)} className="p-2 rounded-xl border border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:hover:bg-slate-850 transition" title="Thành viên và thông tin kênh"><Users size={14} /></button>
+                  <button type="button" onClick={openEditChannel} className="p-2 rounded-xl border border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:hover:bg-slate-850 transition" title="Chỉnh sửa kênh"><Edit2 size={14} /></button>
+                </>
+              )}
               {selectedChannel && canDeleteCurrentChannel && (
                 <button
                   type="button"
@@ -932,6 +1037,34 @@ export default function KenhChatView({ language = "vi", user, users = [] }: Kenh
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showEditChannel && editingChannel && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-md rounded-2xl overflow-hidden shadow-lg">
+            <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between"><h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">Chỉnh sửa kênh #{editingChannel.name}</h3><button onClick={() => setShowEditChannel(false)} className="text-slate-400"><X size={18} /></button></div>
+            <form onSubmit={handleUpdateChannel} className="p-5 space-y-4">
+              <input value={editChannelName} onChange={e => setEditChannelName(e.target.value)} required className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl text-xs text-slate-800 dark:text-slate-100" placeholder="Tên kênh" />
+              <select value={editChannelCategory} onChange={e => setEditChannelCategory(e.target.value)} className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl text-xs text-slate-800 dark:text-slate-100"><option value="general">Chung toàn văn phòng</option><option value="tranh_tung">Tranh tụng Tòa án</option><option value="tu_van">Tư vấn & Hợp đồng</option><option value="phap_che">Pháp chế Doanh nghiệp</option><option value="ban_giam_doc">Ban Giám đốc</option></select>
+              <textarea value={editChannelDesc} onChange={e => setEditChannelDesc(e.target.value)} rows={3} className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 rounded-xl text-xs text-slate-800 dark:text-slate-100" placeholder="Mô tả kênh" />
+              <label className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200">Kênh riêng tư<input type="checkbox" checked={editChannelPrivate} onChange={e => setEditChannelPrivate(e.target.checked)} /></label>
+              <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowEditChannel(false)} className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-bold">Hủy</button><button type="submit" className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold">Lưu thay đổi</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showChannelInfo && selectedChannel && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-lg rounded-2xl overflow-hidden shadow-lg">
+            <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between"><div><h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">#{selectedChannel.name}</h3><p className="text-xs text-slate-500 mt-1">{channelMembers.length} thành viên</p></div><button onClick={() => setShowChannelInfo(false)} className="text-slate-400"><X size={18} /></button></div>
+            <div className="p-5 space-y-4">
+              {canManageSelectedChannel && <div className="flex gap-2"><input value={memberSearch} onChange={e => setMemberSearch(e.target.value)} className="flex-1 px-3 py-2 bg-slate-50 dark:bg-slate-850 border border-slate-200 rounded-xl text-xs" placeholder="Tìm nhân sự để thêm..." /><button type="button" onClick={() => { const target = users.find(item => item.id !== user.id && !channelMembers.some(member => Number(member.id) === Number(item.id) && (item.name || item.username).toLowerCase().includes(memberSearch.toLowerCase())) && (item.name || item.username).toLowerCase().includes(memberSearch.toLowerCase())); if (target) addChannelMembers([target.id]); }} className="p-2.5 rounded-xl bg-slate-900 text-white" title="Thêm nhân sự"><UserPlus size={16} /></button></div>}
+              <div className="max-h-72 overflow-y-auto space-y-2">{channelMembers.map(member => <div key={member.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-850 border border-slate-100 dark:border-slate-800"><div className="flex items-center gap-3 min-w-0"><div className="w-8 h-8 rounded-lg bg-slate-200 flex items-center justify-center text-xs font-bold">{(member.name || member.username || "?")[0]}</div><div className="min-w-0"><p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">{member.name || member.username}</p><p className="text-[10px] text-slate-400">{member.email || member.user_role}</p></div></div><div className="flex items-center gap-1">{canManageSelectedChannel && <select value={member.channel_role || "member"} onChange={e => updateMemberRole(member.id, e.target.value as "admin" | "member")} className="text-[10px] rounded-lg border border-slate-200 bg-white px-1.5 py-1"><option value="member">Thành viên</option><option value="admin">Quản trị</option></select>} {canManageSelectedChannel && Number(member.id) !== Number(user?.id) && <button type="button" onClick={() => removeChannelMember(member.id)} className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg" title="Xóa thành viên"><UserMinus size={14} /></button>}</div></div>)}</div>
+              <div className="flex justify-between items-center pt-2 border-t border-slate-100"><span className="text-[11px] text-slate-400">Quản lý thành viên và quyền truy cập kênh</span><button type="button" onClick={() => removeChannelMember(user.id)} className="text-xs font-bold text-rose-600">Rời kênh</button></div>
+            </div>
           </div>
         </div>
       )}

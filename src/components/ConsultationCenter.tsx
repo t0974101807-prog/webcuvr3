@@ -8,15 +8,6 @@ import {
   ListFilter, Shield, ArrowRight, MessageSquare, PlusCircle, Headphones, Video, BookOpen,
   Award, Eye, BarChart3, TrendingUp, UserCheck, Activity, Radio, Sparkles
 } from 'lucide-react';
-import { 
-  collection, 
-  onSnapshot, 
-  doc, 
-  setDoc, 
-  deleteDoc, 
-  updateDoc 
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../utils/firebase';
 
 interface CallLog {
   id: string;
@@ -156,12 +147,12 @@ export default function ConsultationCenter({
 
   const callTimer = useRef<NodeJS.Timeout | null>(null);
 
-  // Load Calls from API and setup real-time socket connection
+  // Load calls through the authenticated calls API and refresh via Socket.IO.
   const loadCallsFromApi = async () => {
     try {
       const res = await fetchApi('/api/calls');
       const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
+      if (Array.isArray(data)) {
         const parsed = data.map((item: any) => ({
           ...item,
           hasRecording: Boolean(item.hasRecording),
@@ -170,276 +161,62 @@ export default function ConsultationCenter({
         }));
         setCallLogs(parsed);
       }
-    } catch (e) {
-      console.error("Error loading calls from API:", e);
+    } catch (error) {
+      console.error("Error loading calls from API:", error);
     }
   };
 
   useEffect(() => {
     loadCallsFromApi();
-
-    // Socket.IO real-time updates for leadership & controllers
-    let socket: any = null;
-    try {
-      socket = io({
-        transports: ['websocket'],
-        reconnection: true,
-        reconnectionAttempts: 3,
-        reconnectionDelay: 2000,
-        timeout: 5000
+    const socket = io({ transports: ['websocket'], reconnection: true, reconnectionAttempts: 3 });
+    socket.on('call_log_updated', loadCallsFromApi);
+    socket.on('call_ended', loadCallsFromApi);
+    socket.on('call_deleted', loadCallsFromApi);
+    socket.on('live_call_status', (activeData: any) => {
+      if (!activeData) return;
+      setLiveCalls(prev => {
+        const filtered = prev.filter(c => c.phone !== activeData.phone && c.id !== activeData.id);
+        return activeData.status === 'ended' ? filtered : [activeData, ...filtered];
       });
-      socket.on('call_log_updated', () => loadCallsFromApi());
-      socket.on('call_ended', () => loadCallsFromApi());
-      socket.on('call_deleted', () => loadCallsFromApi());
-      socket.on('live_call_status', (activeData: any) => {
-        if (activeData) {
-          setLiveCalls(prev => {
-            const filtered = prev.filter(c => c.phone !== activeData.phone && c.id !== activeData.id);
-            if (activeData.status === 'ended') return filtered;
-            return [activeData, ...filtered];
-          });
-        }
-      });
-    } catch (e) {
-      console.error("Socket connect error in ConsultationCenter:", e);
-    }
-
+    });
     return () => {
-      if (socket) socket.disconnect();
+      socket.disconnect();
     };
   }, []);
 
-  // Initializing Data (Fallback & Appointments mapping real system records)
   useEffect(() => {
-    // Helper to generate seed call logs from actual system records
-    const seedRealCallLogsFromRecords = (): CallLog[] => {
-      if (!records || records.length === 0) {
-        return [
-          {
-            id: "call-seed-hs001",
-            dossierId: "HS-2026-001",
-            dossierTitle: "Tranh chấp hợp đồng dịch vụ",
-            name: "Công ty TNHH ABC",
-            phone: "0903123456",
-            type: "outgoing",
-            duration: 245,
-            timestamp: "10:30 - 25/07/2026",
-            hasRecording: true,
-            staffName: "Luật sư Nguyễn Văn A",
-            status: "connected",
-            category: "Tranh chấp Hợp đồng",
-            consultationNote: "Biên bản tư vấn vi phạm nghĩa vụ thanh toán đợt 1 hợp đồng dịch vụ. Đã đề xuất phương án thương lượng gửi công văn cảnh báo.",
-            transcript: "Luật sư: Dạ chào đại diện Công ty TNHH ABC. Tôi gọi để thống nhất phương án gửi công văn yêu cầu thanh toán đợt 1 cho đối tác.\nKhách hàng: Nhờ Luật sư làm gấp giúp tôi, bên kia đang trễ hạn 15 ngày rồi.\nLuật sư: Vâng, tôi đã hoàn thiện dự thảo công văn và sẽ gửi anh/chị duyệt ngay trong ngày.",
-            qcRating: "5",
-            qcEvaluator: "Hệ thống AI Copilot"
-          },
-          {
-            id: "call-seed-dn003",
-            dossierId: "DN003",
-            dossierTitle: "Tư vấn sáp nhập doanh nghiệp",
-            name: "Nguyễn Văn B (Cty Nam Á)",
-            phone: "0912345678",
-            type: "incoming",
-            duration: 310,
-            timestamp: "14:15 - 24/07/2026",
-            hasRecording: true,
-            staffName: "Luật sư Lê Hoàn",
-            status: "connected",
-            category: "Tư vấn Doanh nghiệp",
-            consultationNote: "Biên bản tư vấn quy trình sáp nhập M&A và thẩm định rủi ro pháp lý tài sản công ty bị sáp nhập.",
-            transcript: "Khách hàng: Chào Luật sư, hồ sơ rà soát pháp lý dự án sáp nhập công ty C tiến triển thế nào rồi?\nLuật sư: Báo cáo anh, đội ngũ pháp lý đã thẩm định xong danh mục hợp đồng hiện hữu và chưa phát hiện nợ xấu tiềm ẩn.",
-            qcRating: "5",
-            qcEvaluator: "Trưởng ban Pháp chế"
-          }
-        ];
-      }
-      return records.slice(0, 6).map((r, idx) => ({
-        id: `call-log-${r.id}`,
-        dossierId: r.id,
-        dossierTitle: r.title || r.category || "Hồ sơ vụ việc",
-        name: r.client || r.clientName || `Khách hàng Hồ sơ ${r.id}`,
-        phone: r.phone || `090${Math.floor(1000000 + idx * 88888)}`,
-        type: idx % 2 === 0 ? "outgoing" : "incoming",
-        duration: 180 + idx * 45,
-        timestamp: `${10 + idx}:${15 + idx * 5} - 25/07/2026`,
-        hasRecording: true,
-        staffName: r.mainAssignee || "Luật sư Nguyễn Văn A",
-        status: "connected",
-        category: r.category || "Tư vấn Pháp lý",
-        consultationNote: r.summary || `Biên bản tư vấn thực tế cho Hồ sơ ${r.id} (${r.title || 'Hồ sơ hệ thống'}). Đã rà soát rủi ro và thống nhất phương án xử lý với khách hàng.`,
-        transcript: `Luật sư: Chào anh/chị đại diện ${r.client || 'khách hàng'}. Tôi gọi điện để trao đổi phương án xử lý tiếp theo cho Hồ sơ ${r.id}.\nKhách hàng: Cảm ơn luật sư, bên tôi rất mong nhận được văn bản tư vấn chính thức.`,
-        qcRating: "5",
-        qcEvaluator: "AI Audit System"
-      }));
-    };
-
-    // Helper to generate seed appointments from actual system records
-    const seedRealApptsFromRecords = (): Appointment[] => {
-      if (!records || records.length === 0) {
-        return [
-          {
-            id: "appt-seed-1",
-            dossierId: "HS-2026-001",
-            clientName: "Công ty TNHH ABC",
-            phone: "0903123456",
-            category: "Tranh chấp Hợp đồng",
-            dateTime: "2026-07-27 09:30",
-            assignedStaff: "Luật sư Nguyễn Văn A",
-            type: "online",
-            notes: "Phòng họp trực tuyến Video Meeting thảo luận phương án hòa giải tranh chấp đợt 1.",
-            status: "pending"
-          },
-          {
-            id: "appt-seed-2",
-            dossierId: "DN003",
-            clientName: "Nguyễn Văn B (Cty Nam Á)",
-            phone: "0912345678",
-            category: "Doanh nghiệp & Đầu tư",
-            dateTime: "2026-07-28 14:00",
-            assignedStaff: "Luật sư Lê Hoàn",
-            type: "direct",
-            notes: "Gặp trực tiếp tại Văn phòng Trụ sở chính ký kết Hợp đồng dịch vụ tư vấn M&A.",
-            status: "pending"
-          }
-        ];
-      }
-      return records.slice(0, 6).map((r, idx) => ({
-        id: `appt-rec-${r.id}`,
-        dossierId: r.id,
-        clientName: r.client || r.clientName || `Khách hàng ${r.id}`,
-        phone: r.phone || `091${Math.floor(2000000 + idx * 77777)}`,
-        category: r.category || "Tư vấn Pháp lý",
-        dateTime: `2026-07-${26 + (idx % 4)} ${9 + idx}:30`,
-        assignedStaff: r.mainAssignee || "Luật sư Nguyễn Văn A",
-        type: idx % 2 === 0 ? "online" : "direct",
-        notes: `Lịch hẹn tư vấn và báo cáo tiến độ xử lý trực tiếp cho Hồ sơ ${r.id} (${r.title || 'Hồ sơ vụ việc'}).`,
-        status: "pending"
-      }));
-    };
-
-    // 1. Setup Live Call Logs Real-time sync via Firestore
-    if (db && (db as any).isMock) {
-      console.warn("Skipping real-time Firestore listeners in ConsultationCenter because database is in mock fallback mode.");
-      return;
-    }
-
-    const unsubCalls = onSnapshot(collection(db, 'voip_calls'), (snapshot) => {
-      if (!snapshot.empty) {
-        const list: CallLog[] = [];
-        snapshot.forEach((d) => {
-          const data = d.data();
-          list.push({
-            id: d.id,
-            name: data.name,
-            phone: data.phone,
-            type: data.type,
-            duration: Number(data.duration || 0),
-            timestamp: data.timestamp,
-            hasRecording: Boolean(data.hasRecording),
-            recordingUrl: data.recordingUrl,
-            staffName: data.staffName,
-            staffRole: data.staffRole,
-            branch: data.branch,
-            status: data.status,
-            transcript: data.transcript,
-            isViolated: Boolean(data.isViolated),
-            dossierId: data.dossierId,
-            dossierTitle: data.dossierTitle,
-            category: data.category,
-            consultationNote: data.consultationNote,
-            qcRating: data.qcRating,
-            qcNotes: data.qcNotes,
-            qcEvaluator: data.qcEvaluator
-          });
-        });
-        // Sort descending
-        list.sort((a, b) => b.id.localeCompare(a.id));
-        setCallLogs(list);
-        localStorage.setItem(CALL_LOGS_KEY, JSON.stringify(list));
-        window.dispatchEvent(new Event('storage'));
-      } else {
-        setCallLogs([]);
-        localStorage.setItem(CALL_LOGS_KEY, JSON.stringify([]));
-        window.dispatchEvent(new Event('storage'));
-      }
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'voip_calls');
-    });
-
-    // 2. Setup Live Appointments Real-time sync via Firestore
-    const unsubAppts = onSnapshot(collection(db, 'appointments'), (snapshot) => {
-      if (!snapshot.empty) {
-        const list: Appointment[] = [];
-        snapshot.forEach((d) => {
-          const data = d.data();
-          list.push({
-            id: d.id,
-            clientName: data.clientName,
-            phone: data.phone,
-            category: data.category,
-            dateTime: data.dateTime,
-            assignedStaff: data.assignedStaff,
-            type: data.type,
-            notes: data.notes,
-            status: data.status,
-            dossierId: data.dossierId
-          });
-        });
-        // Sort descending
-        list.sort((a, b) => b.id.localeCompare(a.id));
-        setAppointments(list);
-        localStorage.setItem(APPOINTMENTS_KEY, JSON.stringify(list));
-        window.dispatchEvent(new Event('storage'));
-      } else {
-        setAppointments([]);
-        localStorage.setItem(APPOINTMENTS_KEY, JSON.stringify([]));
-        window.dispatchEvent(new Event('storage'));
-      }
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'appointments');
-    });
-
-    return () => {
-      unsubCalls();
-      unsubAppts();
-    };
-  }, [user, records]);
-
-  // Sync call logs to Firestore
-  const saveCallLogs = async (updatedLogs: CallLog[]) => {
-    if (updatedLogs.length > 0) {
-      const latestLog = updatedLogs[0];
+    const loadAppointments = async () => {
       try {
-        await setDoc(doc(db, 'voip_calls', latestLog.id), latestLog);
+        const response = await fetchApi('/api/appointments');
+        if (!response.ok) return;
+        const data = await response.json();
+        if (Array.isArray(data)) setAppointments(data);
       } catch (error) {
-        handleFirestoreError(error, OperationType.WRITE, `voip_calls/${latestLog.id}`);
+        console.error("Error loading appointments from API:", error);
       }
-    }
-  };
+    };
+    loadAppointments();
+  }, [user]);
 
-  // Sync appointments to Firestore
+  const saveCallLogs = async (updatedLogs: CallLog[]) => setCallLogs(updatedLogs);
+
   const saveAppointments = async (updatedAppts: Appointment[]) => {
-    if (updatedAppts.length > 0) {
-      const newOrChanged = updatedAppts.find(a => {
-        const existing = appointments.find(e => e.id === a.id);
-        return !existing || JSON.stringify(existing) !== JSON.stringify(a);
-      });
-      if (newOrChanged) {
-        try {
-          await setDoc(doc(db, 'appointments', newOrChanged.id), newOrChanged);
-        } catch (error) {
-          handleFirestoreError(error, OperationType.WRITE, `appointments/${newOrChanged.id}`);
-        }
-      }
-    }
+    const changed = updatedAppts.find(a => {
+      const existing = appointments.find(e => e.id === a.id);
+      return !existing || JSON.stringify(existing) !== JSON.stringify(a);
+    });
+    if (!changed) return;
+    const method = appointments.some(a => a.id === changed.id) ? 'PUT' : 'POST';
+    await fetchApi(method === 'POST' ? '/api/appointments' : `/api/appointments/${changed.id}`, {
+      method,
+      body: JSON.stringify(changed)
+    });
+    setAppointments(updatedAppts);
   };
 
-  const deleteAppointmentFromFirestore = async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'appointments', id));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `appointments/${id}`);
-    }
+  const deleteAppointment = async (id: string) => {
+    await fetchApi(`/api/appointments/${id}`, { method: 'DELETE' });
+    setAppointments(prev => prev.filter(appointment => appointment.id !== id));
   };
 
   // Click to Call simulation
@@ -559,13 +336,6 @@ export default function ConsultationCenter({
         method: 'PUT',
         body: JSON.stringify(updatedData)
       });
-
-      // Update Firestore
-      try {
-        await updateDoc(doc(db, 'voip_calls', selectedQcCall.id), updatedData);
-      } catch (err) {
-        console.error("Firestore QC update error:", err);
-      }
 
       // Update local state
       setCallLogs(prev => prev.map(c => c.id === selectedQcCall.id ? { ...c, ...updatedData } : c));
@@ -708,7 +478,7 @@ export default function ConsultationCenter({
   // Delete an appointment
   const handleDeleteAppointment = async (id: string) => {
     if (confirm(language === 'vi' ? "Bạn có chắc muốn xóa lịch hẹn này?" : "Are you sure you want to delete this appointment?")) {
-      await deleteAppointmentFromFirestore(id);
+      await deleteAppointment(id);
     }
   };
 

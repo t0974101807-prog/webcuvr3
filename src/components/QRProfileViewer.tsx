@@ -14,14 +14,25 @@ export default function QRProfileViewer({ profileId }: { profileId: string }) {
 
     const fetchRecord = async () => {
       try {
-        const res = await fetch(`/api/erp-records/detail?id=${encodeURIComponent(profileId)}`);
+        const isPaymentQr = profileId.startsWith('case_');
+        const res = await fetch(isPaymentQr
+          ? `/api/payment/public/case-qr/${encodeURIComponent(profileId)}`
+          : `/api/erp-records/detail?id=${encodeURIComponent(profileId)}`);
         if (!res.ok) {
           setError("Hồ sơ không tồn tại hoặc đã bị xóa!");
           setLoading(false);
           return;
         }
-        const record = await res.json();
-        setData(record);
+        const payload = await res.json();
+        if (isPaymentQr) {
+          setData({
+            ...(payload.data?.caseDetails || {}),
+            paymentEval: payload.data?.paymentEval,
+            caseQr: true
+          });
+        } else {
+          setData(payload);
+        }
         setError('');
       } catch (err: any) {
         console.error("Fetch error", err);
@@ -131,6 +142,24 @@ export default function QRProfileViewer({ profileId }: { profileId: string }) {
                   </div>
                 </div>
               </div>
+
+              {record.caseQr && record.paymentEval && (
+                <div className="p-6 md:p-8 border-t border-slate-100 bg-white">
+                  <h3 className="text-lg font-bold text-slate-800 mb-4 uppercase">Thanh toán hồ sơ</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                    <div><span className="text-slate-500 block">Trạng thái thanh toán</span><strong className="text-slate-800">{record.paymentEval.payment_summary?.status || 'Chưa khởi tạo'}</strong></div>
+                    <div><span className="text-slate-500 block">Đã thanh toán</span><strong className="text-emerald-700">{Number(record.paymentEval.payment_summary?.paid_amount || 0).toLocaleString('vi-VN')} VNĐ</strong></div>
+                    <div><span className="text-slate-500 block">Còn phải thanh toán</span><strong className="text-amber-700">{Number(record.paymentEval.payment_summary?.remaining_amount || 0).toLocaleString('vi-VN')} VNĐ</strong></div>
+                  </div>
+                  {record.paymentEval.active_schedule?.vietqr_url && (
+                    <div className="mt-5 flex flex-col items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-sm font-semibold text-slate-700">Quét mã để thanh toán đợt hiện tại</p>
+                      <img src={record.paymentEval.active_schedule.vietqr_url} alt="Mã QR thanh toán" className="w-48 h-48 bg-white p-2 rounded-lg" />
+                      <p className="text-xs text-slate-500">Nội dung chuyển khoản: {record.paymentEval.active_schedule.payment_ref}</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

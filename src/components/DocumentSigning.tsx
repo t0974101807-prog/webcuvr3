@@ -17,15 +17,6 @@ import {
   Type
 } from 'lucide-react';
 import { fetchApi } from '../utils/api';
-import { 
-  collection, 
-  onSnapshot, 
-  doc, 
-  setDoc,
-  query,
-  where
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../utils/firebase';
 import { useContactSettings } from '../hooks/useContactSettings';
 
 interface DocumentTemplate {
@@ -119,32 +110,15 @@ export default function DocumentSigning({ user }: DocumentSigningProps) {
 
   const clientId = user?.username || `client_${user?.id || 'guest'}`;
 
-  // Real-time subscribe to client signed documents
+  // Load signed documents through the authenticated server boundary.
   useEffect(() => {
     if (!clientId) return;
-
-    if (db && (db as any).isMock) {
-      console.warn("Skipping real-time signed_documents listener because database is in mock fallback mode.");
-      return;
-    }
-
-    const q = query(
-      collection(db, 'signed_documents'),
-      where('clientId', '==', clientId)
-    );
-
-    const unsub = onSnapshot(q, (snapshot) => {
-      const docsList: SignedDocRecord[] = [];
-      snapshot.forEach((d) => {
-        docsList.push({ id: d.id, ...d.data() } as SignedDocRecord);
-      });
-      docsList.sort((a, b) => (b.signedAt || "").localeCompare(a.signedAt || ""));
-      setSignedHistory(docsList);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'signed_documents');
-    });
-
-    return () => unsub();
+    fetchApi(`/api/signed-documents?clientId=${encodeURIComponent(clientId)}`)
+      .then((response) => response.json())
+      .then((data) => {
+        if (Array.isArray(data)) setSignedHistory(data);
+      })
+      .catch((error) => console.error("Failed to load signed documents", error));
   }, [clientId]);
 
   // Adjust canvas size for sharp drawing
@@ -467,7 +441,7 @@ export default function DocumentSigning({ user }: DocumentSigningProps) {
       const formData = new FormData();
       formData.append('file', docBlob, `${selectedTemplate.id}_signed_${Date.now()}.png`);
 
-      const uploadRes = await fetch('/api/live-upload', {
+      const uploadRes = await fetch('/api/secure-upload', {
         method: 'POST',
         body: formData
       });
@@ -481,7 +455,7 @@ export default function DocumentSigning({ user }: DocumentSigningProps) {
         throw new Error('Upload response missing url');
       }
 
-      // 4. Save to Firestore `signed_documents` for portal listing
+      // 4. Save through the authenticated server boundary for portal listing
       const signedRecordId = `signed-doc-${Date.now()}`;
       const record: SignedDocRecord = {
         id: signedRecordId,
@@ -496,7 +470,14 @@ export default function DocumentSigning({ user }: DocumentSigningProps) {
         method: signingMethod
       };
 
-      await setDoc(doc(db, 'signed_documents', signedRecordId), record);
+      const saveResponse = await fetchApi('/api/signed-documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(record),
+      });
+      if (!saveResponse.ok) {
+        throw new Error('Không thể lưu tài liệu đã ký');
+      }
 
       setAlertMsg({ 
         type: 'success', 
