@@ -1257,6 +1257,7 @@ export class TrashService {
   static async emptyTrash(performedBy: string = "Quản trị viên") {
     const allBins = db.prepare("SELECT id, master_id, masterId, systemId, data FROM recycle_bin").all() as any[];
     const ids = new Set<string>();
+    const sourceDataById = new Map<string, any>();
 
     for (const item of allBins) {
       for (const value of [item.id, item.master_id, item.masterId, item.systemId]) {
@@ -1264,6 +1265,9 @@ export class TrashService {
       }
       try {
         const data = typeof item.data === "string" ? JSON.parse(item.data) : item.data;
+        if (data && typeof data === "object") {
+          sourceDataById.set(String(item.id), data);
+        }
         for (const value of [data?.id, data?.masterId, data?.systemId, data?.contractId, data?.authContractId]) {
           if (value) ids.add(String(value));
         }
@@ -1282,7 +1286,7 @@ export class TrashService {
       db.prepare("DELETE FROM court_schedule WHERE case_id = ?").run(id);
       db.prepare("DELETE FROM recycle_bin WHERE id = ? OR master_id = ? OR masterId = ? OR systemId = ?").run(id, id, id, id);
       try {
-        const sourceData = typeof item.data === "string" ? JSON.parse(item.data) : item.data;
+        const sourceData = sourceDataById.get(String(id)) ?? {};
         const domain = mapCategoryToDomain(sourceData?.category || sourceData?.practice_area);
         await deleteFromFirestore("recycle_bin", id);
         await deleteFromFirestore("erp_records", id);

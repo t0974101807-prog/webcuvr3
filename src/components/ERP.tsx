@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+ import React, { useState, useEffect, useRef, useMemo } from "react";
+import DocumentScanner from "./DocumentScanner";
 import {
   ModuleErrorBoundary,
   DatePickerInput,
@@ -1630,6 +1631,12 @@ export default function ERP({ onBack, user, onProfileClick, onUpdateUser }: ERPP
             active={activeTab === "qr_profiles"}
             onClick={() => setActiveTab("qr_profiles")}
           />
+          <NavItem
+            icon={<Camera />}
+            label={language === "vi" ? "Quét & Số hóa Paperless" : "Paperless Scan & Digitize"}
+            active={activeTab === "document_scanner"}
+            onClick={() => setActiveTab("document_scanner")}
+          />
 
           {/* 5. WORKFLOW & SCHEDULE */}
           <div className="pt-4 pb-1 px-3">
@@ -2032,6 +2039,11 @@ export default function ERP({ onBack, user, onProfileClick, onUpdateUser }: ERPP
                 user={user}
                 myPermissions={myPermissions}
               />
+            )}
+            {activeTab === "document_scanner" && (
+              <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+                <DocumentScanner />
+              </div>
             )}
             {activeTab === "legal_docs" && (
               <LegalDocumentsManager
